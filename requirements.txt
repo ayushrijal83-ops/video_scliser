@@ -1,0 +1,15 @@
+# Milestone 01: Foundation - Minimal dependencies
+# Core dependencies for project structure and basic functionality
+
+# Environment & Configuration
+python-dotenv>=1.0.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Type checking
+mypy>=1.5.0
+
+# Code quality
+ruff>=0.1.0

@@ -1,0 +1,46 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+*.cover
+*.py,cover
+.hypothesis/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project specific
+input/
+output/
+*.log
+
+# Models (large files)
+*.bin
+*.gguf
+*.pt
+*.pth
+*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
