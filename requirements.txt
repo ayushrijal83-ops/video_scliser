@@ -13,3 +13,13 @@ mypy>=1.5.0
 
 # Code quality
 ruff>=0.1.0
+
+# Milestone 02: Transcription Engine
+# faster-whisper for local speech-to-text
+faster-whisper>=1.1.0
+
+# torch CPU for faster-whisper (no CUDA)
+torch>=2.4.0 --index-url https://download.pytorch.org/whl/cpu
+
+# Audio/video processing via FFmpeg subprocess (no extra deps needed)
+# Using subprocess directly to avoid ffmpeg-python dependency
