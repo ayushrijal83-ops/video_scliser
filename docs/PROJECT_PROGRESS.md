@@ -27,54 +27,73 @@ Build a completely free, local AI-powered automatic video clipper that:
 
 ---
 
-## Current Milestone: **Milestone 01 - Foundation**
+## Current Milestone: **Milestone 02 - Transcription Engine**
 
 **Status: COMPLETED**
 
 ### Completed Work
 
-1. **Repository Inspection**
-   - Existing Git repository detected (clean, on main branch)
-   - Python 3.10.11 available
-   - FFmpeg: **NOT INSTALLED** (blocker for video processing)
-   - Ollama: **INSTALLED but not running** (client v0.32.15)
-   - Existing file: `readme.txt` (preserved)
+1. **Dependencies Added**
+   - `faster-whisper>=1.1.0` - Local speech-to-text
+   - `torch>=2.4.0` (CPU variant via `--index-url https://download.pytorch.org/whl/cpu`)
+   - Dependencies: `ctranslate2`, `huggingface-hub`, `tokenizers`, `onnxruntime`, `av`, `numpy`, `tqdm`, `pyyaml`
 
-2. **Project Structure Created**
+2. **Model Selection**
+   - **Model: `small`** (244M parameters, ~488 MB)
+   - **Rationale**: Good accuracy/speed tradeoff for 16 GB RAM CPU machine
+   - `tiny` (39M) - too low accuracy
+   - `base` (74M) - better but still limited
+   - `small` (244M) - sweet spot for CPU
+   - `medium` (769M) - slower, ~1.5 GB
+   - `large` (1550M) - too heavy for 16 GB RAM
+   - Model downloads on first use (lazy loading), not during installation
+
+3. **Architecture Created**
    ```
-   ai-video-clipper/
-   ├── app/
-   │   ├── __init__.py
-   │   ├── transcription/
-   │   ├── ai/
-   │   ├── video/
-   │   ├── clipping/
-   │   └── ui/
-   ├── tests/
-   │   └── __init__.py
-   ├── input/
-   ├── output/
-   ├── docs/
-   ├── requirements.txt
-   ├── README.md
-   └── docs/PROJECT_PROGRESS.md
+   app/transcription/
+   ├── __init__.py           # Public API exports
+   ├── __main__.py           # CLI entry point
+   ├── models.py             # Typed data models (TranscriptSegment, WordTimestamp, TranscriptionResult)
+   ├── exceptions.py         # Domain-specific exceptions
+   ├── service.py            # TranscriptionService with FFmpeg audio extraction
+   └── cli.py                # Developer CLI for manual testing
    ```
 
-3. **Virtual Environment**
-   - Created at `.venv/`
-   - Python 3.10.11
-   - Pip upgraded to 26.2.1
+4. **Core Features Implemented**
+   - **Audio extraction**: FFmpeg subprocess (safe arg lists, no shell injection)
+   - **Transcription**: faster-whisper with word-level timestamps
+   - **Language detection**: Automatic with probability scores
+   - **Supported formats**: MP4, MKV, MOV, AVI, WebM, MP3, WAV, M4A, FLAC, OGG
+   - **CPU-only execution**: `device="cpu"`, `compute_type="int8"`
+   - **Lazy model loading**: Model loads on first transcription call
+   - **Structured output**: JSON-serializable dataclasses with full timestamps
 
-4. **Dependencies Installed (Milestone 01 only)**
-   - `python-dotenv>=1.0.0` - Environment configuration
-   - `pytest>=7.4.0` - Testing framework
-   - `pytest-cov>=4.1.0` - Coverage reporting
-   - `mypy>=1.5.0` - Static type checking
-   - `ruff>=0.1.0` - Linting/formatting
+5. **Error Handling**
+   - `InputFileNotFoundError` - missing file
+   - `UnsupportedMediaFormatError` - invalid/corrupt media
+   - `FFmpegNotFoundError` - FFmpeg not in PATH
+   - `FFmpegExecutionError` - FFmpeg processing failure
+   - `ModelNotAvailableError` - model download/load failure
+   - `InvalidModelConfigurationError` - bad model/device/compute config
+   - `TranscriptionFailedError` - Whisper runtime error
+   - `EmptyAudioError` - no speech detected
+   - `AudioExtractionError` - audio extraction failure
 
-5. **Documentation**
-   - `README.md` - Project overview, setup, milestones
-   - `docs/PROJECT_PROGRESS.md` - This document
+6. **Tests (46 passing)**
+   - Model validation (timestamps, serialization, edge cases)
+   - Service initialization (valid/invalid configs)
+   - Input validation (missing files, dirs, extensions)
+   - FFmpeg error handling (not found, execution error, timeout)
+   - Transcription flow (success, empty audio, model failure, wrapped errors)
+
+7. **Code Quality**
+   - Ruff: ✅ All checks passed
+   - MyPy: ✅ No issues (10 source files)
+   - Pytest: ✅ 46/46 passed
+
+8. **CLI Verification**
+   - `python -m app.transcription --help` works
+   - `python -m app.transcription <video>` ready for manual testing
 
 ---
 
@@ -86,9 +105,9 @@ Build a completely free, local AI-powered automatic video clipper that:
 | Virtual Env | ✅ Created | `.venv/` |
 | Pip | ✅ Upgraded | 26.2.1 |
 | Git | ✅ Initialized | Clean, main branch |
-| FFmpeg | ❌ **MISSING** | Required for Milestone 04+ |
+| FFmpeg | ✅ Available | 9.0.2 (winget, added to user PATH) |
 | Ollama | ⚠️ Installed, not running | Client v0.32.15 |
-| Dependencies | ✅ Installed | 5 packages (minimal) |
+| Dependencies | ✅ Installed | 20+ packages |
 
 ---
 
@@ -97,67 +116,70 @@ Build a completely free, local AI-powered automatic video clipper that:
 | Test | Result |
 |------|--------|
 | Python environment activation | ✅ PASS |
-| Package imports (pytest, ruff, mypy, dotenv) | ✅ PASS |
-| Project structure validity | ✅ PASS |
-| Git status clean | ✅ PASS |
-| FFmpeg availability | ❌ FAIL (not installed) |
-| Ollama availability | ⚠️ PARTIAL (installed, daemon not running) |
+| Package imports (faster-whisper, torch, etc.) | ✅ PASS |
+| All unit tests (46 tests) | ✅ PASS |
+| Ruff linting | ✅ PASS |
+| MyPy type checking | ✅ PASS |
+| CLI help command | ✅ PASS |
+| Model loading (dry run) | ✅ PASS |
 
 ---
 
 ## Security Considerations
 
-- ✅ No secrets in repository
-- ✅ No hardcoded paths
-- ✅ Virtual environment isolated
-- ✅ `.venv/` added to `.gitignore` (to be created)
-- ✅ No network calls in foundation code
-- ✅ No model downloads in Milestone 01
+- ✅ No shell injection - subprocess uses arg lists
+- ✅ No arbitrary command execution
+- ✅ No network API calls in transcription (only model download from HF on first use)
+- ✅ No hardcoded credentials
+- ✅ No secrets
+- ✅ No unsafe temp file handling (uses `tempfile.TemporaryDirectory`)
+- ✅ User-provided paths validated and resolved
+- ✅ Input file extension allowlist
+- ✅ FFmpeg binary located via `shutil.which()` (PATH only)
 
 ---
 
-## Known Issues / Blockers
+## Known Limitations
 
-1. **FFmpeg not installed** - Required for all video processing (Milestone 04+). User must install manually.
-2. **Ollama daemon not running** - Required for LLM inference (Milestone 03+). User must start with `ollama serve`.
-3. **No .gitignore yet** - Should be created to exclude `.venv/`, `__pycache__/`, `*.pyc`, `.env`, `input/`, `output/`
+1. **Model downloads on first use** - Requires internet for initial model fetch (~488 MB for `small`)
+2. **CPU-only** - Transcription slower than GPU (expected for $0 cost)
+3. **No VAD** - No voice activity detection preprocessing (Whisper handles silence)
+4. **Single model instance** - Service reuses loaded model (good for batch, not for multi-model)
+5. **No real integration test** - No test video in repo; manual test requires user-provided media
 
 ---
 
 ## Important Decisions
 
-1. **Minimal dependencies for M01** - Only tooling/deps needed for foundation (no AI libs yet)
-2. **Modular package structure** - Each domain (transcription, ai, video, clipping, ui) is separate
-3. **No premature features** - No captions, no social upload, no effects, no UI yet
-4. **Single progress document** - All milestones update this same `PROJECT_PROGRESS.md`
-5. **Git commit per milestone** - Clean history, one commit per milestone
+1. **Model: `small`** - Best balance for 16 GB RAM CPU
+2. **Direct FFmpeg subprocess** - No `ffmpeg-python` dependency, safer
+3. **Lazy model loading** - No surprise downloads during import
+4. **Word-level timestamps** - Enabled for future clip selection precision
+5. **compute_type=int8** - Optimal for CPU inference speed/memory
+6. **Structured exceptions** - Domain-specific, actionable errors
+7. **JSON serializable models** - Easy for AI module consumption
 
 ---
 
-## Next Milestone: **Milestone 02 - Transcription Module**
+## Next Milestone: **Milestone 03 - AI Reasoning Module (Ollama + Qwen)**
 
 ### Scope
-- Integrate `faster-whisper` for local speech-to-text
-- Create transcription service with:
-  - Audio extraction from video (FFmpeg)
-  - Transcription with timestamps
-  - Segment/word-level timing
-  - Language detection
-  - Configurable model size (tiny/base/small/medium/large)
+- Integrate Ollama for local LLM inference
+- Use Qwen model (e.g., `qwen2.5:7b` or `qwen2.5:3b`) for clip selection reasoning
+- Create AI service that takes transcript segments + user instruction → clip timestamps
+- Structured output: list of (start, end, reason) for clip candidates
 
 ### Dependencies to Add
-- `faster-whisper>=1.0.0`
-- `torch` (CPU variant for $0 cost)
-- `ffmpeg-python` or direct FFmpeg subprocess calls
+- `ollama>=0.3.0` (Python client)
 
 ### Prerequisites
-- FFmpeg MUST be installed and in PATH
-- Test audio extraction works
+- Ollama daemon running (`ollama serve`)
+- Qwen model pulled (`ollama pull qwen2.5:7b`)
 
 ### Deliverables
-- `app/transcription/service.py` - Main transcription logic
-- `app/transcription/models.py` - Data models (Segment, Word, TranscriptionResult)
-- Unit tests for transcription service
+- `app/ai/service.py` - AI reasoning service
+- `app/ai/models.py` - Clip candidate data models
+- Unit tests for AI service (mocked Ollama)
 - Updated `requirements.txt`
 - Updated `PROJECT_PROGRESS.md`
 
@@ -172,7 +194,12 @@ D:\video_scliser\
 ├── app/
 │   ├── __init__.py
 │   ├── transcription/
-│   │   └── __init__.py
+│   │   ├── __init__.py
+│   │   ├── __main__.py
+│   │   ├── models.py
+│   │   ├── exceptions.py
+│   │   ├── service.py
+│   │   └── cli.py
 │   ├── ai/
 │   │   └── __init__.py
 │   ├── video/
@@ -182,18 +209,21 @@ D:\video_scliser\
 │   └── ui/
 │       └── __init__.py
 ├── tests/
-│   └── __init__.py
+│   ├── __init__.py
+│   ├── test_transcription_models.py
+│   └── test_transcription_service.py
 ├── input/
 ├── output/
 ├── docs/
 │   └── PROJECT_PROGRESS.md
 ├── readme.txt             # Original file (preserved)
 ├── README.md
-└── requirements.txt
+├── requirements.txt
+└── .gitignore
 ```
 
-**Git Commit (to be created):** `chore: initialize local AI video clipper foundation`
+**Git Commit (to be created):** `feat: add local timestamped transcription engine`
 
 ---
 
-*Last Updated: 2026-10-02 | Milestone 01 Complete*
+*Last Updated: 2026-10-02 | Milestone 02 Complete*
