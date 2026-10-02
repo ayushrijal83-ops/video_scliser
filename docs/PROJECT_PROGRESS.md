@@ -27,7 +27,168 @@ Build a completely free, local AI-powered automatic video clipper that:
 
 ---
 
-## Current Milestone: **Milestone 04 - Video Processing Engine**
+## Current Milestone: **Milestone 05 - Automatic Clip Selection & Generation**
+
+**Status: COMPLETED** - first complete product pipeline (core V1).
+
+### Architecture
+
+```
+app/clipping/
+├── __init__.py      # Public API exports
+├── __main__.py      # python -m app.clipping (exit code propagated)
+├── models.py        # ClipJobRequest (limits), ClipWindow, GeneratedClip, ClipGenerationResult, JobStatus
+├── exceptions.py    # ClipGenerationError(.stage) + 7 stage-specific errors, messages bounded to 300 chars
+├── windows.py       # compute_window (exact-duration, boundary shifting), iou
+├── selection.py     # normalize_candidates, rank_candidates, select_moments (greedy IoU filter)
+├── service.py       # ClipGenerationService - sequential orchestration, all-or-nothing rendering
+└── cli.py           # developer/user CLI with status lines on stderr, JSON result on stdout
+```
+
+`pipeline.py` was not created separately. The orchestration in `ClipGenerationService` is split into one small method per
+stage (`_probe_source`, `_plan_outputs`, `_transcribe`, `_analyze`, `_render`, `_verify`), and the pure
+decision logic lives in `windows.py`/`selection.py`.
+
+M02/M03/M04 are used only through their public APIs (`TranscriptionService.transcribe`,
+`AIReasoningService.analyze`, `VideoService.probe/extract_clip`). They are typed as `Protocol`s so tests inject fakes,
+and the real services are created lazily.
+
+### Pipeline
+
+| Status | Work | Failure |
+|---|---|---|
+| validating | request limits; probe source; source >= clip duration; source has audio; `clip_NNN.mp4` names free | `InvalidJobRequestError`, `SourceTooShortError` |
+| transcribing | M02 | `TranscriptionStageError` |
+| analyzing | M03 | `AnalysisStageError` |
+| selecting | validate, rank, window, IoU filter | `InsufficientCandidatesError` |
+| generating | M04 per window, sequential, `overwrite=False` | `ClipRenderError(index)` |
+| validating_outputs | file exists and non-empty; duration within M04 tolerance; video present; audio kept | `OutputVerificationError(index)` |
+| completed / failed | `on_status(status, detail)` callback + log | - |
+
+All cheap checks (limits, probe, length, audio, name conflicts) run **before** the expensive transcription.
+
+### Request model (`ClipJobRequest`)
+
+- `clip_count`: int, 1..20 (`MAX_CLIP_COUNT`; M03's default candidate cap is 20). Bools and floats are rejected.
+- `clip_duration`: finite, 1..600 s (`MIN/MAX_CLIP_DURATION`).
+- `instruction`: non-blank, ≤ 500 chars (`MAX_INSTRUCTION_CHARS`).
+- `input_path`, `output_dir`: non-empty. The input is validated by M04 probing.
+
+### Candidate selection strategy
+
+1. **Normalize**: every candidate is re-validated against the *probed source duration*, because M03 only checks against the
+   transcript duration and does not reject NaN. Rejected: non-finite values or bools, start < 0, end <= start, start >= source,
+   end > source, score outside [0, 1].
+2. **Rank** (deterministic): score desc → |candidate length − requested duration| asc → start asc → end asc.
+3. **Window**, then **filter** greedily down the ranking. Stops at exactly `clip_count`.
+4. Clip numbering follows the ranking (`clip_001.mp4` = strongest moment).
+
+### Exact-duration window strategy
+
+`start = clamp(round(center − D/2, 3), 0, source − D)` and `end = start + D`, where `center = (cand.start + cand.end) / 2`.
+- A short candidate gains equal context on both sides. A long candidate keeps its middle D seconds.
+- Shifted forward at the video start and backward at the end; the length is never reduced.
+- source < D → `SourceTooShortError` (1e-6 float slack only).
+- The start is rounded to ms. The real E2E run showed `1.5499999999999998` before rounding was added.
+- M04 cuts and verifies the window. M05 re-verifies `|actual − D| <= max(0.05 s, 1/fps)` before reporting success.
+
+### Overlap strategy
+
+Applied to the **final windows** (what the viewer sees), not the raw candidates: two distinct 4-second jokes 8 s apart
+would still produce nearly identical 30-second clips. A window is kept only if its IoU with every kept window is
+≤ **0.2** (`MAX_WINDOW_IOU`). For equal-length clips that means sharing ≤ 1/3 of their length (10 s of a 30 s clip).
+The stronger-ranked window always wins, and exact duplicates (IoU 1) collapse to one.
+
+### Insufficient candidates
+
+No duplication, no fabricated moments, no silent short results: `InsufficientCandidatesError(found, requested,
+returned)` is raised before any rendering. The service is built so a future pass can ask M03 for more
+(`select_moments` takes any candidate iterable), but M05 makes one honest pass.
+
+### Atomic output behavior
+
+Output is all-or-nothing per job. On any render or verification failure (or interrupt), every clip this job produced is deleted.
+The job directory is removed too if this job created it and it is empty. Files that were already in the folder are never touched.
+Pre-existing `clip_NNN.mp4` names stop the job before any work.
+
+### M03 fix (minimal, necessary)
+
+The real E2E run hit `AIResponseParseError: Invalid control character` because qwen2.5:0.5b emitted a raw newline inside a JSON
+string. `app/ai/prompts.py` now uses `json.loads(response, strict=False)`, with a regression test added to `test_ai_prompts.py`.
+Nothing else in M02/M03/M04 was changed.
+
+### Tests (82 new + 1 M03 regression, 310 total)
+
+- `test_clipping_selection.py`: request validation (valid, bounds, 0/negative/huge/float/bool count, 0/negative/NaN/±inf/
+  out-of-range/non-number duration, empty/blank/too-long instruction, empty paths); windows (centered, ms rounding,
+  short/long candidate, near start, near end, exact source length, source too short, float stays in bounds); IoU;
+  normalization (12 invalid shapes); ranking (score, equal-score tie-breaks, order independence); selection
+  (exact count, no/partial/heavy overlap, duplicates, deterministic tie, insufficient message, no candidates, invalid
+  candidates do not count, exact window length).
+- `test_clipping_service.py` (fake M02/M03/M04 writing real files): successful orchestration and status sequence, exact count,
+  existing dir without conflicts, missing source, source too short (no transcription run), no audio, existing clip not
+  overwritten (no work run), output dir is a file, transcription failure, AI failures, insufficient candidates (nothing
+  rendered), no fabricated duplicates, render failure on clip 1 (created dir removed), partial failure at clip 3
+  (earlier clips removed, user file kept), duration verification failure, lost audio, within-tolerance accepted,
+  hostile model/instruction text never reaches the video engine, fixed safe filenames, no subprocess/shell in the pipeline,
+  bounded error messages and logs.
+
+### Quality Gates
+
+- Pytest: **310 passed** (M02, M03 and M04 suites all still green).
+- Ruff: M05 code/tests clean. The 21 pre-existing import warnings in M02/M03 test files are unchanged.
+- MyPy: `mypy app` clean. `mypy --strict` reports 0 errors in `app/clipping` and its tests (19 strict-only errors remain in imported M02/M03 modules, which pass the project's normal mypy settings).
+
+### Real End-to-End Verification
+
+The source was synthesized locally (no media download): Windows SAPI TTS (`Microsoft David Desktop`) read a 65 s meeting script
+containing two jokes and dull filler. FFmpeg muxed it with `testsrc` into a 70 s 640x360 30 fps H.264/AAC `meeting.mp4`.
+faster-whisper `small` was downloaded once (user-approved, ~480 MB). Ollama `qwen2.5:0.5b`, FFmpeg 9.0.2.
+
+```
+python -m app.clipping meeting.mp4 -n 2 -d 10 -i "funny moments" -o job1
+python -m app.clipping meeting.mp4 -n 6 -d 10 -i "funny moments" -o job_insuff_a   (and _b)
+python -m app.clipping meeting.mp4 -n 3 -d 15 -i "funny moments" -o job_final
+```
+
+| Run | AI candidates | Result | Probed outputs |
+|---|---|---|---|
+| 2 × 10 s (cold, incl. model download) | 5 | completed in 72.9 s | 2 × 10.000000 s, h264 + aac |
+| 6 × 10 s (a) | 8 | **failed clearly**: "Only 5 sufficiently distinct ... requested 6"; no dir created | - |
+| 6 × 10 s (b) | 18 | completed in 43.1 s | 6 × 10.000000 s, video + audio |
+| 3 × 15 s (final code) | 18 | completed in 41.2 s; clip 1 shifted to 0.0-15.0 at the video start | 3 × 15.000000 s, video + audio |
+| (earlier, before M03 fix) 6 × 10 s | - | failed clearly at `analyzing` with the JSON control-character error | - |
+
+Timing on an Intel Core Ultra 5 125H, CPU only (warm): transcription ~17 s for 70 s of audio, Qwen 11-22 s, FFmpeg ~0.7 s per clip.
+
+### Security
+
+- Untrusted input: the user instruction (goes only into the LLM prompt), the transcript, and AI output (only validated floats and score/reason
+  *data* leave the selection step).
+- Output paths come only from `clip_filename(i)` via M04 `safe_output_path`. There is no user/AI-controlled filename, and no traversal.
+- No subprocess in M05 (asserted by a test); all media work goes through M04's argument-list FFmpeg calls.
+- Never overwrites: the job pre-checks names and M04 is called with `overwrite=False`.
+- No network beyond the local Ollama daemon and the one-time, user-approved Whisper model download (M02 behavior).
+  No uploads, no cloud APIs, no new dependencies.
+- Error messages are capped at 300 chars, so transcripts and model dumps don't leak into logs.
+
+### Known Limitations
+
+1. **Selection quality is bounded by qwen2.5:0.5b.** In the E2E runs it gave identical reasons and a 0.91 score to all
+   18 candidates and called a printer announcement humorous. M05 follows the AI ranking deterministically, so a larger model
+   (`qwen2.5:3b`) is the quality lever.
+2. Qwen output varies run to run (temperature 0.1), so the same request can succeed or fail with insufficient candidates.
+3. One analysis pass only; there is no automatic second pass to find more candidates.
+4. Speech is required: sources without audio are rejected. Moments come from the transcript only, not visuals.
+5. M03 truncates transcripts at 8000 chars, so later parts of long videos may never be considered.
+6. M02 logs `Could not determine audio duration, using 0.0` with FFmpeg 9.0.2 and falls back to the last segment end. M05 is
+   unaffected because it uses the probed video duration, but M03 rejects candidates after the last speech segment.
+7. All-or-nothing jobs discard already-rendered clips if a later clip fails.
+8. Synchronous only: no job queue, no cancellation beyond Ctrl+C (which still cleans up).
+
+---
+
+## Milestone 04 - Video Processing Engine
 
 **Status: COMPLETED**
 
@@ -275,16 +436,15 @@ It also checked that a clip past the source end is rejected with no output writt
 
 ---
 
-## Next Milestone: **Milestone 05 - Automatic Clip Selection/Generation**
+## Next Milestone: **Milestone 06 - Local Web UI (Flask)**
 
 ### Scope
-- Connect the transcript (M02) and Qwen candidates (M03) to the M04 engine (`VideoService.extract_clip`)
-- Honour the requested number of clips and the exact duration per clip
-- Fit/expand candidate windows to the requested duration within source bounds
-- Name outputs via `safe_output_path`
+- Local-only Flask UI: upload/select a video, enter clip count, duration and instruction
+- Run `ClipGenerationService.generate` and show the `on_status` progress stages
+- List and preview the generated clips from the result; show `ClipGenerationError` stage and message on failure
 
 ### Dependencies to Add
-- None expected
+- `flask` (local server only, bound to 127.0.0.1)
 
 ---
 
@@ -322,7 +482,14 @@ D:\video_scliser\
 │   │   ├── service.py
 │   │   └── cli.py
 │   ├── clipping/
-│   │   └── __init__.py
+│   │   ├── __init__.py
+│   │   ├── __main__.py
+│   │   ├── models.py
+│   │   ├── exceptions.py
+│   │   ├── windows.py
+│   │   ├── selection.py
+│   │   ├── service.py
+│   │   └── cli.py
 │   └── ui/
 │       └── __init__.py
 ├── tests/
@@ -337,7 +504,9 @@ D:\video_scliser\
 │   ├── test_video_ffmpeg.py
 │   ├── test_video_probe.py
 │   ├── test_video_service.py
-│   └── test_video_integration.py
+│   ├── test_video_integration.py
+│   ├── test_clipping_selection.py
+│   └── test_clipping_service.py
 ├── input/
 ├── output/
 ├── docs/
@@ -348,8 +517,8 @@ D:\video_scliser\
 └── .gitignore
 ```
 
-**Git Commit:** `feat: add FFmpeg video processing engine`
+**Git Commit:** `feat: add automatic AI clip generation pipeline`
 
 ---
 
-*Last Updated: 2026-10-02 | Milestone 04 Complete*
+*Last Updated: 2026-10-02 | Milestone 05 Complete*

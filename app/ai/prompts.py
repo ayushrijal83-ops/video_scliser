@@ -93,7 +93,8 @@ def parse_ai_response(response: str, max_candidates: int = 20) -> list[dict]:
         response = "\n".join(lines).strip()
 
     try:
-        data = json.loads(response)
+        # strict=False: small models often emit raw newlines/tabs inside JSON strings.
+        data = json.loads(response, strict=False)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON: {e}")
 

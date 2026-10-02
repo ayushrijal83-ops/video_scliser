@@ -17,7 +17,7 @@ ai-video-clipper/
 │   ├── transcription/    # Speech-to-text (faster-whisper) ✅
 │   ├── ai/               # LLM reasoning (Ollama + Qwen) ✅
 │   ├── video/            # Video processing engine (FFmpeg/FFprobe) ✅
-│   ├── clipping/         # Clip selection & generation logic
+│   ├── clipping/         # Automatic clip selection & generation pipeline ✅
 │   └── ui/               # Local web UI (Flask)
 ├── tests/                # Unit & integration tests
 ├── input/                # Input videos
@@ -26,7 +26,7 @@ ai-video-clipper/
 └── requirements.txt
 ```
 
-## Current Milestone: **Milestone 04 - Video Processing Engine** ✅
+## Current Milestone: **Milestone 05 - Automatic Clip Selection & Generation** ✅
 
 - [x] Project structure created
 - [x] Python virtual environment
@@ -55,12 +55,16 @@ ai-video-clipper/
 - [x] Strict bounds: clips past the source end fail, never silently shortened
 - [x] Atomic output (temp file → validate → rename), no overwrite by default
 - [x] 113 video tests (227 total) - unit tests mock FFmpeg; 1 real-FFmpeg test auto-skips if FFmpeg is absent
+- [x] End-to-end pipeline: video + count + duration + instruction → exactly N exact-duration clips
+- [x] Deterministic ranking, IoU overlap filtering, boundary-aware exact-duration windows
+- [x] All-or-nothing jobs: insufficient moments or any failed clip → clear error, no leftover clips
+- [x] 82 clipping tests (310 total) - fake M02/M03/M04, no Ollama/Whisper/FFmpeg needed
+- [x] Real end-to-end run verified (faster-whisper small + qwen2.5:0.5b + FFmpeg)
 
 ## Future Milestones
 
 | Milestone | Focus |
 |-----------|-------|
-| **05** | Clipping logic (timestamp selection → exact duration clips) |
 | **06** | Local web UI (Flask) |
 | **07** | End-to-end integration & testing |
 
@@ -96,6 +100,97 @@ mypy app/
 | **Python 3.10+** | Runtime | https://python.org |
 
 > **Note:** FFmpeg and Ollama are NOT installed by this project. You must install them separately.
+
+## Automatic Clip Generation (M05)
+
+```
+video + clip count + clip duration + instruction
+  │ validating          request limits, probe source (must have audio, be >= clip duration),
+  │                     output names clip_001.mp4.. must not exist
+  │ transcribing        M02 faster-whisper (TranscriptionService)
+  │ analyzing           M03 Ollama + Qwen (AIReasoningService) → candidate moments
+  │ selecting           Python: validate vs real source → rank → exact-duration windows → IoU filter
+  │ generating          M04 VideoService.extract_clip per window (sequential)
+  │ validating_outputs  re-check every clip: exists, duration within tolerance, video + audio present
+  ▼ completed           ClipGenerationResult with exactly N GeneratedClip entries
+```
+
+**AI suggests, Python decides, FFmpeg executes.** Qwen output only ever becomes validated floats.
+It never becomes commands, filenames or paths.
+
+### Usage
+
+```bash
+python -m app.clipping input/meeting.mp4 -n 3 -d 30 -i "funny moments"
+python -m app.clipping input/meeting.mp4 -n 3 -d 30 -i "funny moments" -o output/my_job --language en --whisper-model small
+```
+
+```python
+from app.clipping import ClipGenerationService, ClipJobRequest
+
+result = ClipGenerationService().generate(
+    ClipJobRequest("input/meeting.mp4", "output/job1", clip_count=3, clip_duration=30.0,
+                   instruction="funny moments"))
+for clip in result.clips:
+    print(clip.index, clip.path, clip.start, clip.end, clip.score, clip.reason)
+```
+
+Progress goes to stderr (`[time] status detail`), and the JSON result goes to stdout. The exit code is 0 on success, 1 on job failure and 2 on bad input.
+
+### Input parameters
+
+| Parameter | Limit | Why |
+|---|---|---|
+| `clip_count` | integer 1-20 | M03 returns at most 20 candidates, so more could never be distinct |
+| `clip_duration` | 1-600 s, finite | protects a CPU-only machine from runaway jobs |
+| `instruction` | 1-500 chars | it's inserted into the LLM prompt as data |
+| source video | `.mp4 .mkv .mov .avi .webm`, must contain audio | moments are found from speech |
+
+### Output
+
+```
+output/<video>_<YYYYmmdd-HHMMSS>/     (or --output-dir)
+├── clip_001.mp4    best-ranked moment
+├── clip_002.mp4
+└── ...
+```
+
+Each `GeneratedClip` records `index, path, start, end, duration, actual_duration, score, reason, title,
+candidate_start, candidate_end`. Existing `clip_NNN.mp4` files are never overwritten: the job refuses to start.
+
+### Selection behavior
+
+1. **Validate** each AI candidate against the probed source. Rejected: non-finite values, negative times, end <= start,
+   start or end beyond the source, and scores outside [0, 1].
+2. **Rank** by score descending. Ties go to the candidate whose length is closest to the requested duration, then the earliest start.
+   There is no randomness and no second LLM pass.
+3. **Window**: centered on the candidate, exactly `clip_duration` long. Shorter candidates gain context on both sides,
+   and longer ones keep their middle. A window that would start before 0 shifts forward, and one past the end shifts back.
+   The start is rounded to whole milliseconds.
+4. **Overlap**: walking down the ranking, a window is kept only if its IoU with every already-kept window is
+   ≤ **0.2**. For equal-length clips that means sharing at most 1/3 of their length. Duplicates (IoU 1.0) always collapse to the stronger one.
+5. **Count**: once `clip_count` windows are kept, rendering starts.
+
+### Insufficient candidates
+
+If fewer distinct moments exist than requested, the job fails **before rendering anything**, for example:
+`Only 5 sufficiently distinct candidate moments were identified; requested 6 (AI returned 8 candidates). No clips were generated.`
+Nothing is duplicated or invented, and no short list is passed off as success. Run again (Qwen output varies), lower the count,
+or use a larger model.
+
+### Exact duration and failures
+
+Every clip goes through M04 (re-encode + re-probe, tolerance `max(0.05 s, 1 frame)`), and M05 then re-checks the result.
+Jobs are **all-or-nothing**: if clip 7 fails to render or verify, clips 1-6 of that job are deleted, and
+`ClipRenderError` / `OutputVerificationError` reports the clip index and stage. Unrelated files in the folder are untouched.
+
+### Requirements and performance
+
+FFmpeg on PATH, the Ollama daemon running with `qwen2.5:0.5b` pulled, and the faster-whisper model.
+The `small` model is downloaded once from Hugging Face on first use (~480 MB) and cached after that.
+Measured on an Intel Core Ultra 5 125H (CPU only) with a 70 s 640x360 video: transcription ~17 s, Qwen ~11-22 s,
+FFmpeg ~0.7 s per 10-15 s clip, **~41 s per job**. Transcription grows with speech length and rendering with resolution × clip duration.
+All stages run sequentially, so only one model is busy at a time.
 
 ## Video Processing Engine (M04)
 

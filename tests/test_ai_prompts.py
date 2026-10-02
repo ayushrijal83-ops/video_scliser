@@ -123,6 +123,12 @@ class TestParseAIResponse:
         with pytest.raises(ValueError, match="Invalid JSON"):
             parse_ai_response("not json", max_candidates=20)
 
+    def test_raw_newline_inside_string(self) -> None:
+        # Seen from qwen2.5:0.5b in the M05 end-to-end run.
+        reason = "line one" + chr(10) + "line two"  # a literal newline, not the JSON escape
+        response = '{"candidates": [{"start": 1.0, "end": 2.0, "reason": "' + reason + '", "score": 0.9}]}'
+        assert parse_ai_response(response)[0]["reason"] == reason
+
     def test_not_an_object(self) -> None:
         with pytest.raises(TypeError, match="must be a JSON object"):
             parse_ai_response("[]", max_candidates=20)
