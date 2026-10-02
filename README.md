@@ -16,7 +16,7 @@ ai-video-clipper/
 ├── app/
 │   ├── transcription/    # Speech-to-text (faster-whisper) ✅
 │   ├── ai/               # LLM reasoning (Ollama + Qwen) ✅
-│   ├── video/            # Video processing (FFmpeg, OpenCV)
+│   ├── video/            # Video processing engine (FFmpeg/FFprobe) ✅
 │   ├── clipping/         # Clip selection & generation logic
 │   └── ui/               # Local web UI (Flask)
 ├── tests/                # Unit & integration tests
@@ -26,7 +26,7 @@ ai-video-clipper/
 └── requirements.txt
 ```
 
-## Current Milestone: **Milestone 03 - AI Reasoning Module** ✅
+## Current Milestone: **Milestone 04 - Video Processing Engine** ✅
 
 - [x] Project structure created
 - [x] Python virtual environment
@@ -50,12 +50,16 @@ ai-video-clipper/
 - [x] Transcript truncation for context window management
 - [x] 68 AI module tests (114 total) - all mocked, no Ollama required
 - [x] Manual integration test verified with real Ollama
+- [x] FFprobe media probing (MP4, MKV, MOV, AVI, WebM) into typed `VideoInfo`
+- [x] Exact-duration clip extraction (re-encode, verified by re-probing the output)
+- [x] Strict bounds: clips past the source end fail, never silently shortened
+- [x] Atomic output (temp file → validate → rename), no overwrite by default
+- [x] 113 video tests (227 total) - unit tests mock FFmpeg; 1 real-FFmpeg test auto-skips if FFmpeg is absent
 
 ## Future Milestones
 
 | Milestone | Focus |
 |-----------|-------|
-| **04** | Video processing module (FFmpeg wrapper) |
 | **05** | Clipping logic (timestamp selection → exact duration clips) |
 | **06** | Local web UI (Flask) |
 | **07** | End-to-end integration & testing |
@@ -92,6 +96,72 @@ mypy app/
 | **Python 3.10+** | Runtime | https://python.org |
 
 > **Note:** FFmpeg and Ollama are NOT installed by this project. You must install them separately.
+
+## Video Processing Engine (M04)
+
+```
+VideoService.extract_clip(input, output, start, duration, overwrite=False)
+  1. validate request     start >= 0, duration > 0, both finite
+  2. probe source         ffprobe -show_format -show_streams -of json
+  3. bounds check         start < source duration, start + duration <= source duration
+  4. encode to temp       <output dir>/.partial-XXXX.mp4
+  5. probe + validate     duration within tolerance, audio kept if source had it
+  6. os.replace           temp -> final output (atomic)
+```
+
+### Requirements
+
+FFmpeg **and** FFprobe on `PATH` (one install provides both). On Windows: `winget install Gyan.FFmpeg`,
+then open a **new** terminal so the updated `PATH` is picked up. Explicit paths can be passed via
+`FFmpegRunner(ffmpeg_path=..., ffprobe_path=...)`.
+
+### Inputs and output
+
+| | |
+|---|---|
+| Input containers | `.mp4`, `.mkv`, `.mov`, `.avi`, `.webm` (extension and ffprobe container both checked) |
+| Output | `.mp4` only - H.264 (`libx264`, preset `medium`, CRF 23, `yuv420p`) + AAC 192k, `+faststart` |
+| Why | H.264/AAC MP4 plays everywhere (browsers, phones, editors, social uploads) |
+
+### Exact-duration behavior
+
+- Clips are always **re-encoded**. Stream copy can only cut on keyframes, so its durations are unpredictable.
+- `-ss` before `-i` with re-encoding is frame-accurate and does not decode the whole file up to `start`.
+- After encoding, the output is probed again and rejected if `|actual - requested| > max(0.05 s, 1 frame)`.
+  Audio is cut sample-exactly, but video can only end on a frame boundary (one frame = 41.7 ms at 23.976 fps).
+- **Measured** on FFmpeg 9.0.2: maximum error **0.023 s** (30 fps and 23.976 fps sources); many clips are exact.
+- A clip extending past the source end raises `ClipDurationError`. It is **never** silently shortened.
+- Re-encoding is CPU-bound (expected for a $0 local tool). Only the requested span is encoded, and FFmpeg streams the media, so nothing is loaded into Python memory.
+
+### Audio
+
+- Source has audio: the first audio stream is kept (AAC). If the output loses it, validation fails.
+- Source has no audio: the output is a valid video-only MP4. No silent track is invented.
+
+### Usage
+
+```python
+from app.video import VideoService, safe_output_path
+
+svc = VideoService()
+info = svc.probe("input/talk.mkv")              # VideoInfo(duration=..., has_audio=...)
+clip = svc.extract_clip("input/talk.mkv", safe_output_path("output", "clip_01.mp4"),
+                        start=12.5, duration=30.0)  # ProcessedVideo(actual_duration=30.0, ...)
+```
+
+`safe_output_path(dir, name)` rejects generated/user-supplied names that would escape `dir` (`../x.mp4`, `C:\x.mp4`, `sub/x.mp4`).
+
+### CLI and manual verification
+
+```bash
+python -m app.video probe input/talk.mkv
+python -m app.video extract input/talk.mkv output/clip.mp4 --start 12.5 --duration 30 [--overwrite]
+python -m app.video selftest   # real FFmpeg check with synthetic videos (no downloads)
+```
+
+`selftest` generates small synthetic videos in all five containers (with and without audio, 30 and 23.976 fps).
+It then extracts clips and checks the duration error, out-of-range rejection, overwrite protection and temp-file cleanup.
+`pytest` runs the same check (`tests/test_video_integration.py`) whenever FFmpeg is on `PATH`.
 
 ## AI Reasoning Module Usage
 
