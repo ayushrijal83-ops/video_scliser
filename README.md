@@ -15,7 +15,7 @@ A completely free, local AI-powered automatic video clipper. **$0 cost, no cloud
 ai-video-clipper/
 ├── app/
 │   ├── transcription/    # Speech-to-text (faster-whisper) ✅
-│   ├── ai/               # LLM reasoning (Ollama + Qwen)
+│   ├── ai/               # LLM reasoning (Ollama + Qwen) ✅
 │   ├── video/            # Video processing (FFmpeg, OpenCV)
 │   ├── clipping/         # Clip selection & generation logic
 │   └── ui/               # Local web UI (Flask)
@@ -26,7 +26,7 @@ ai-video-clipper/
 └── requirements.txt
 ```
 
-## Current Milestone: **Milestone 02 - Transcription Engine** ✅
+## Current Milestone: **Milestone 03 - AI Reasoning Module** ✅
 
 - [x] Project structure created
 - [x] Python virtual environment
@@ -42,12 +42,19 @@ ai-video-clipper/
 - [x] 46 unit tests passing
 - [x] Lint (ruff) and type check (mypy) clean
 - [x] Developer CLI for manual testing
+- [x] Ollama integration for local LLM inference
+- [x] qwen2.5:0.5b model for clip selection reasoning
+- [x] Strict JSON output with timestamp validation
+- [x] Deterministic candidate sorting (score desc, start asc)
+- [x] Configurable candidate limit (default 20)
+- [x] Transcript truncation for context window management
+- [x] 68 AI module tests (114 total) - all mocked, no Ollama required
+- [x] Manual integration test verified with real Ollama
 
 ## Future Milestones
 
 | Milestone | Focus |
 |-----------|-------|
-| **03** | AI reasoning module (Ollama + Qwen for clip selection) |
 | **04** | Video processing module (FFmpeg wrapper) |
 | **05** | Clipping logic (timestamp selection → exact duration clips) |
 | **06** | Local web UI (Flask) |
@@ -74,9 +81,6 @@ pytest
 # Lint & type check
 ruff check .
 mypy app/
-
-# Test transcription (requires video file)
-python -m app.transcription input/video.mp4
 ```
 
 ## External Dependencies Required
@@ -88,6 +92,77 @@ python -m app.transcription input/video.mp4
 | **Python 3.10+** | Runtime | https://python.org |
 
 > **Note:** FFmpeg and Ollama are NOT installed by this project. You must install them separately.
+
+## AI Reasoning Module Usage
+
+### As a Library
+
+```python
+from app.transcription import TranscriptionResult
+from app.ai import AIReasoningService, AIReasoningConfig, ClipAnalysisResult
+
+# Load transcript (from transcription module)
+transcript: TranscriptionResult = ...
+
+# Configure AI service
+config = AIReasoningConfig.from_env()  # Reads OLLAMA_HOST, OLLAMA_MODEL, etc.
+service = AIReasoningService(config)
+
+# Analyze transcript with user instruction
+result: ClipAnalysisResult = service.analyze(
+    transcript,
+    instruction="Find the most educational moments"
+)
+
+print(f"Found {result.total_candidates} candidates")
+for c in result.candidates:
+    print(f"  [{c.start:.1f}-{c.end:.1f}] score={c.score:.2f} - {c.reason}")
+```
+
+### CLI
+
+```bash
+# Analyze existing transcript JSON
+python -m app.ai transcript.json "Find the most interesting moments"
+
+# Transcribe and analyze in one step
+python -m app.ai input/video.mp4 "Find funny moments" --transcribe
+
+# With options
+python -m app.ai transcript.json "Find educational moments" --model qwen2.5:0.5b --max-candidates 10 --temperature 0.1 -o results.json
+```
+
+### Output Format
+
+```json
+{
+  "instruction": "Find the most educational moments",
+  "model_name": "qwen2.5:0.5b",
+  "transcript_duration": 120.5,
+  "total_candidates": 3,
+  "candidates": [
+    {
+      "start": 35.0,
+      "end": 55.0,
+      "reason": "Clear explanation of data types with examples",
+      "score": 0.92,
+      "title": "",
+      "transcript_text": "",
+      "confidence": 1.0
+    }
+  ]
+}
+```
+
+### Configuration (Environment Variables)
+
+```bash
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:0.5b
+OLLAMA_TIMEOUT=120
+AI_MAX_CANDIDATES=20
+AI_TEMPERATURE=0.1
+```
 
 ## Transcription Module Usage
 
@@ -145,6 +220,8 @@ python -m app.transcription input/video.mp4 -v
 
 ## Model Selection
 
+### Transcription (faster-whisper)
+
 Default model: **`small`** (244M parameters, ~488 MB)
 
 | Model | Parameters | Size | CPU Speed | Accuracy |
@@ -155,7 +232,17 @@ Default model: **`small`** (244M parameters, ~488 MB)
 | medium | 769M | 1.5 GB | Slow | Better |
 | large | 1550M | 3 GB | Very Slow | Best |
 
-Models download automatically on first use from Hugging Face Hub.
+### AI Reasoning (Ollama)
+
+Default model: **`qwen2.5:0.5b`** (494M parameters, ~398 MB)
+
+| Model | Parameters | Size | CPU Speed | Quality |
+|-------|------------|------|-----------|---------|
+| **qwen2.5:0.5b** | **494M** | **398 MB** | **Fast** | **Good** |
+| qwen2.5:3b | 3B | 1.8 GB | Slow | Better |
+| qwen2.5:7b | 7B | 4.7 GB | Very Slow | Best |
+
+Models download manually via `ollama pull <model>`.
 
 ## License
 

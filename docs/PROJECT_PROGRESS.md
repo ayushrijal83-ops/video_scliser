@@ -27,73 +27,74 @@ Build a completely free, local AI-powered automatic video clipper that:
 
 ---
 
-## Current Milestone: **Milestone 02 - Transcription Engine**
+## Current Milestone: **Milestone 03 - AI Reasoning Module**
 
 **Status: COMPLETED**
 
 ### Completed Work
 
 1. **Dependencies Added**
-   - `faster-whisper>=1.1.0` - Local speech-to-text
-   - `torch>=2.4.0` (CPU variant via `--index-url https://download.pytorch.org/whl/cpu`)
-   - Dependencies: `ctranslate2`, `huggingface-hub`, `tokenizers`, `onnxruntime`, `av`, `numpy`, `tqdm`, `pyyaml`
+   - `ollama>=0.3.0` - Official Ollama Python client
+   - Transitive: `pydantic>=2.9`
 
 2. **Model Selection**
-   - **Model: `small`** (244M parameters, ~488 MB)
-   - **Rationale**: Good accuracy/speed tradeoff for 16 GB RAM CPU machine
-   - `tiny` (39M) - too low accuracy
-   - `base` (74M) - better but still limited
-   - `small` (244M) - sweet spot for CPU
-   - `medium` (769M) - slower, ~1.5 GB
-   - `large` (1550M) - too heavy for 16 GB RAM
-   - Model downloads on first use (lazy loading), not during installation
+   - **Model: `qwen2.5:0.5b`** (494M parameters, ~398 MB)
+   - **Rationale**: Optimal for 16 GB RAM CPU-only machine
+   - `qwen2.5:0.5b` (494M) - Fast, fits easily in 16 GB RAM, good reasoning quality
+   - `qwen2.5:3b` (3B) - Slower, ~1.8 GB, better quality
+   - `qwen2.5:7b` (7B) - Too slow on CPU, ~4.7 GB, best quality
+   - Model pulling is explicit user action (`ollama pull qwen2.5:0.5b`), not automatic
 
 3. **Architecture Created**
    ```
-   app/transcription/
+   app/ai/
    ├── __init__.py           # Public API exports
    ├── __main__.py           # CLI entry point
-   ├── models.py             # Typed data models (TranscriptSegment, WordTimestamp, TranscriptionResult)
-   ├── exceptions.py         # Domain-specific exceptions
-   ├── service.py            # TranscriptionService with FFmpeg audio extraction
+   ├── models.py             # ClipCandidate, ClipAnalysisResult (typed, validated, serializable)
+   ├── exceptions.py         # 8 domain-specific exceptions
+   ├── client.py             # OllamaClient with lazy connection, error handling
+   ├── prompts.py            # System/user prompts, transcript formatting, JSON parsing
+   ├── service.py            # AIReasoningService - main orchestration
    └── cli.py                # Developer CLI for manual testing
    ```
 
 4. **Core Features Implemented**
-   - **Audio extraction**: FFmpeg subprocess (safe arg lists, no shell injection)
-   - **Transcription**: faster-whisper with word-level timestamps
-   - **Language detection**: Automatic with probability scores
-   - **Supported formats**: MP4, MKV, MOV, AVI, WebM, MP3, WAV, M4A, FLAC, OGG
-   - **CPU-only execution**: `device="cpu"`, `compute_type="int8"`
-   - **Lazy model loading**: Model loads on first transcription call
-   - **Structured output**: JSON-serializable dataclasses with full timestamps
+   - **Strict JSON output** - Prompt enforces JSON-only response, no markdown fences
+   - **Transcript preparation** - Compact timestamped format, configurable max chars (default 8000)
+   - **Timestamp validation** - All candidates validated: numeric, finite, >=0, end>start, within duration
+   - **Score validation** - Enforced 0.0-1.0 range, invalid candidates skipped with warning
+   - **Deterministic sorting** - By score descending, then start timestamp ascending
+   - **Candidate limit** - Configurable max (default 20)
+   - **Lazy Ollama connection** - No daemon required for imports or unit tests
+   - **Environment configuration** - OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_TIMEOUT, AI_MAX_CANDIDATES, AI_TEMPERATURE
 
 5. **Error Handling**
-   - `InputFileNotFoundError` - missing file
-   - `UnsupportedMediaFormatError` - invalid/corrupt media
-   - `FFmpegNotFoundError` - FFmpeg not in PATH
-   - `FFmpegExecutionError` - FFmpeg processing failure
-   - `ModelNotAvailableError` - model download/load failure
-   - `InvalidModelConfigurationError` - bad model/device/compute config
-   - `TranscriptionFailedError` - Whisper runtime error
-   - `EmptyAudioError` - no speech detected
-   - `AudioExtractionError` - audio extraction failure
+   - `OllamaUnavailableError` - Daemon not reachable
+   - `OllamaModelUnavailableError` - Model not pulled
+   - `AIInferenceError` - Generation failure
+   - `AIResponseParseError` - Malformed JSON or missing fields
+   - `InvalidCandidateError` - Validation failures (logged, candidate skipped)
+   - `InvalidConfigurationError` - Bad config values
+   - `TranscriptTooLargeError` - Input exceeds max chars
+   - `EmptyTranscriptError` - No segments to analyze
 
-6. **Tests (46 passing)**
-   - Model validation (timestamps, serialization, edge cases)
-   - Service initialization (valid/invalid configs)
-   - Input validation (missing files, dirs, extensions)
-   - FFmpeg error handling (not found, execution error, timeout)
-   - Transcription flow (success, empty audio, model failure, wrapped errors)
+6. **Tests (68 new tests, 114 total passing)**
+   - Model validation (timestamps, scores, serialization, edge cases)
+   - Prompt building and JSON parsing (valid, markdown fences, malformed, limits)
+   - Client (config, availability, model check, generation, errors)
+   - Service (success, empty transcript, unavailable, model missing, inference error, parse error, invalid candidates, deterministic ordering, candidate limit, optional fields)
+   - All tests mock Ollama - no daemon required
 
 7. **Code Quality**
    - Ruff: ✅ All checks passed
-   - MyPy: ✅ No issues (10 source files)
-   - Pytest: ✅ 46/46 passed
+   - MyPy: ✅ No issues (18 source files)
+   - Pytest: ✅ 114/114 passed
 
-8. **CLI Verification**
-   - `python -m app.transcription --help` works
-   - `python -m app.transcription <video>` ready for manual testing
+8. **Manual Integration Verification**
+   - Ollama daemon running
+   - `qwen2.5:0.5b` model pulled
+   - CLI test with sample transcript JSON
+   - Returns valid candidates with timestamps, scores, reasons
 
 ---
 
@@ -105,9 +106,9 @@ Build a completely free, local AI-powered automatic video clipper that:
 | Virtual Env | ✅ Created | `.venv/` |
 | Pip | ✅ Upgraded | 26.2.1 |
 | Git | ✅ Initialized | Clean, main branch |
-| FFmpeg | ✅ Available | 9.0.2 (winget, added to user PATH) |
-| Ollama | ⚠️ Installed, not running | Client v0.32.15 |
-| Dependencies | ✅ Installed | 20+ packages |
+| FFmpeg | ✅ Available | 9.0.2 (winget, in PATH) |
+| Ollama | ✅ Running | 0.32.15, `qwen2.5:0.5b` pulled |
+| Dependencies | ✅ Installed | 24 packages |
 
 ---
 
@@ -116,12 +117,12 @@ Build a completely free, local AI-powered automatic video clipper that:
 | Test | Result |
 |------|--------|
 | Python environment activation | ✅ PASS |
-| Package imports (faster-whisper, torch, etc.) | ✅ PASS |
-| All unit tests (46 tests) | ✅ PASS |
+| Package imports (ollama, pydantic, faster-whisper, torch) | ✅ PASS |
+| All unit tests (114 tests) | ✅ PASS |
 | Ruff linting | ✅ PASS |
 | MyPy type checking | ✅ PASS |
 | CLI help command | ✅ PASS |
-| Model loading (dry run) | ✅ PASS |
+| Manual AI reasoning test | ✅ PASS |
 
 ---
 
@@ -129,58 +130,57 @@ Build a completely free, local AI-powered automatic video clipper that:
 
 - ✅ No shell injection - subprocess uses arg lists
 - ✅ No arbitrary command execution
-- ✅ No network API calls in transcription (only model download from HF on first use)
+- ✅ No external API calls - only local Ollama HTTP
 - ✅ No hardcoded credentials
 - ✅ No secrets
-- ✅ No unsafe temp file handling (uses `tempfile.TemporaryDirectory`)
-- ✅ User-provided paths validated and resolved
+- ✅ No unsafe temp file handling
+- ✅ User-provided paths validated
 - ✅ Input file extension allowlist
-- ✅ FFmpeg binary located via `shutil.which()` (PATH only)
+- ✅ LLM output validated before use (JSON parsing, timestamp validation, score bounds)
+- ✅ Untrusted inputs (instruction, transcript, LLM output) all validated
+- ✅ No execution of model output
 
 ---
 
 ## Known Limitations
 
-1. **Model downloads on first use** - Requires internet for initial model fetch (~488 MB for `small`)
-2. **CPU-only** - Transcription slower than GPU (expected for $0 cost)
-3. **No VAD** - No voice activity detection preprocessing (Whisper handles silence)
-4. **Single model instance** - Service reuses loaded model (good for batch, not for multi-model)
-5. **No real integration test** - No test video in repo; manual test requires user-provided media
+1. **Model downloads require explicit user action** - `ollama pull qwen2.5:0.5b`
+2. **CPU-only inference** - Slower than GPU (expected for $0 cost)
+3. **Context window limit** - Transcript truncated at 8000 chars (configurable)
+4. **Single model instance** - Service reuses model connection
+5. **No real integration test in CI** - Requires Ollama daemon + model
+6. **qwen2.5:0.5b reasoning quality** - Smaller model, may miss nuance vs larger models
 
 ---
 
 ## Important Decisions
 
-1. **Model: `small`** - Best balance for 16 GB RAM CPU
-2. **Direct FFmpeg subprocess** - No `ffmpeg-python` dependency, safer
-3. **Lazy model loading** - No surprise downloads during import
-4. **Word-level timestamps** - Enabled for future clip selection precision
-5. **compute_type=int8** - Optimal for CPU inference speed/memory
-6. **Structured exceptions** - Domain-specific, actionable errors
-7. **JSON serializable models** - Easy for AI module consumption
+1. **Model: `qwen2.5:0.5b`** - Best balance for 16 GB RAM CPU
+2. **Strict JSON prompts** - No natural language parsing, deterministic output
+3. **Lazy Ollama connection** - Tests run without daemon
+6. **Graceful candidate skipping** - Invalid candidates logged and skipped, not fatal
+7. **Deterministic ordering** - Score desc, then start asc
+8. **Environment-based config** - No hardcoded values
 
 ---
 
-## Next Milestone: **Milestone 03 - AI Reasoning Module (Ollama + Qwen)**
+## Next Milestone: **Milestone 04 - Video Processing Module**
 
 ### Scope
-- Integrate Ollama for local LLM inference
-- Use Qwen model (e.g., `qwen2.5:7b` or `qwen2.5:3b`) for clip selection reasoning
-- Create AI service that takes transcript segments + user instruction → clip timestamps
-- Structured output: list of (start, end, reason) for clip candidates
+- FFmpeg wrapper for video operations
+- Extract clips with exact durations
+- Concatenate clips
+- Handle video/audio streams properly
+- Support common formats (MP4, MKV, MOV, AVI, WebM)
 
 ### Dependencies to Add
-- `ollama>=0.3.0` (Python client)
-
-### Prerequisites
-- Ollama daemon running (`ollama serve`)
-- Qwen model pulled (`ollama pull qwen2.5:7b`)
+- None (using direct FFmpeg subprocess)
 
 ### Deliverables
-- `app/ai/service.py` - AI reasoning service
-- `app/ai/models.py` - Clip candidate data models
-- Unit tests for AI service (mocked Ollama)
-- Updated `requirements.txt`
+- `app/video/service.py` - Video processing service
+- `app/video/models.py` - Clip specification models
+- Unit tests for video service (mocked FFmpeg)
+- Updated `requirements.txt` (if needed)
 - Updated `PROJECT_PROGRESS.md`
 
 ---
@@ -201,7 +201,14 @@ D:\video_scliser\
 │   │   ├── service.py
 │   │   └── cli.py
 │   ├── ai/
-│   │   └── __init__.py
+│   │   ├── __init__.py
+│   │   ├── __main__.py
+│   │   ├── models.py
+│   │   ├── exceptions.py
+│   │   ├── client.py
+│   │   ├── prompts.py
+│   │   ├── service.py
+│   │   └── cli.py
 │   ├── video/
 │   │   └── __init__.py
 │   ├── clipping/
@@ -211,7 +218,11 @@ D:\video_scliser\
 ├── tests/
 │   ├── __init__.py
 │   ├── test_transcription_models.py
-│   └── test_transcription_service.py
+│   ├── test_transcription_service.py
+│   ├── test_ai_models.py
+│   ├── test_ai_prompts.py
+│   ├── test_ai_client.py
+│   └── test_ai_service.py
 ├── input/
 ├── output/
 ├── docs/
@@ -222,8 +233,8 @@ D:\video_scliser\
 └── .gitignore
 ```
 
-**Git Commit (to be created):** `feat: add local timestamped transcription engine`
+**Git Commit (to be created):** `feat: add local AI reasoning module`
 
 ---
 
-*Last Updated: 2026-10-02 | Milestone 02 Complete*
+*Last Updated: 2026-10-02 | Milestone 03 Complete*

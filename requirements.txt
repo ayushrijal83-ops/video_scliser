@@ -23,3 +23,7 @@ torch>=2.4.0 --index-url https://download.pytorch.org/whl/cpu
 
 # Audio/video processing via FFmpeg subprocess (no extra deps needed)
 # Using subprocess directly to avoid ffmpeg-python dependency
+
+# Milestone 03: AI Reasoning Module
+# Ollama Python client for local LLM inference
+ollama>=0.3.0
