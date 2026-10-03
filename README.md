@@ -26,7 +26,7 @@ ai-video-clipper/
 └── requirements.txt
 ```
 
-## Current Milestone: **Milestone 06 - Local Web UI** ✅
+## Current Milestone: **Milestone 07 - End-to-End Integration, Reliability & AI Quality Evaluation** ✅
 
 - [x] Project structure created
 - [x] Python virtual environment
@@ -62,12 +62,16 @@ ai-video-clipper/
 - [x] Real end-to-end run verified (faster-whisper small + qwen2.5:0.5b + FFmpeg)
 - [x] Local Flask web UI on 127.0.0.1: upload, real stage progress, results, safe downloads
 - [x] 85 UI tests (395 total) - Flask test client, M05 mocked
+- [x] 24 deterministic end-to-end tests with real FFmpeg (fake Whisper/Ollama), plus an opt-in real-model test
+- [x] Real E2E harness with per-stage timings; 0.5B vs 3B AI quality benchmark (`docs/M07_AI_BENCHMARK.md`)
+- [x] Fixed: transcript duration was always 0.0 ("Could not determine audio duration"), wrong-shape AI JSON crash, model-tag check
+- [x] 440 tests (439 pass + 1 opt-in), `ruff check .` and `mypy app benchmarks` clean
 
 ## Future Milestones
 
 | Milestone | Focus |
 |-----------|-------|
-| **07** | End-to-end integration & testing |
+| **08** | Selection quality: model decision & timestamp grounding (recommended, see `docs/PROJECT_PROGRESS.md`) |
 
 ## Development Setup
 
@@ -101,6 +105,40 @@ mypy app/
 | **Python 3.10+** | Runtime | https://python.org |
 
 > **Note:** FFmpeg and Ollama are NOT installed by this project. You must install them separately.
+
+## Testing & Evaluation (M07)
+
+```bash
+pytest                                   # 439 tests; no Ollama/Whisper needed; FFmpeg tests auto-skip without FFmpeg
+```
+
+**Real end-to-end check** (local only: FFmpeg on PATH, Ollama running, `qwen2.5:0.5b` and/or `qwen2.5:3b` pulled,
+faster-whisper `small`, which downloads once on first use):
+
+```bash
+python -m benchmarks.e2e.run_real_e2e --synthesize                      # Windows: makes a 147 s speech test video
+python -m benchmarks.e2e.run_real_e2e --synthesize --model qwen2.5:3b -n 3 -d 10 -i "funny moments"
+python -m benchmarks.e2e.run_real_e2e --video input/talk.mp4 -n 2 -d 15  # any local speech video
+CLIPPER_REAL_E2E=1 pytest tests/test_real_e2e.py -s                     # same, as an opt-in test
+```
+
+**Success** means exactly N clips, each re-probed within the M04 tolerance of the requested duration, with audio kept.
+The exit code is 0. The harness prints per-stage timings and writes `output/e2e/<timestamp>/report.json` plus the
+clips. Delete `output/e2e/` to clean up. Typical time on this laptop CPU (Core Ultra 5 125H) for a 147 s video with
+3 × 10 s clips:
+- transcription ~38 s
+- AI ~10-13 s (0.5b) or 51-117 s (3b)
+- FFmpeg ~0.6 s per clip
+
+**AI quality benchmark** (labelled transcript in `benchmarks/ai/dataset.json`; the labels are never sent to the model):
+
+```bash
+python -m benchmarks.ai.run_benchmark --models qwen2.5:0.5b qwen2.5:3b --runs 3   # ~1 h on CPU
+python -m benchmarks.ai.run_benchmark --tasks funny --runs 5 --temperature 0 --seed 42
+python -m benchmarks.ai.run_benchmark --summarize output/benchmarks/<file>.json   # rescore saved runs
+```
+
+Raw results go to `output/benchmarks/` (gitignored). The findings are in `docs/M07_AI_BENCHMARK.md`.
 
 ## Local Web UI (M06)
 
@@ -447,11 +485,12 @@ Default model: **`qwen2.5:0.5b`** (494M parameters, ~398 MB)
 
 | Model | Parameters | Size | CPU Speed | Quality |
 |-------|------------|------|-----------|---------|
-| **qwen2.5:0.5b** | **494M** | **398 MB** | **Fast** | **Good** |
-| qwen2.5:3b | 3B | 1.8 GB | Slow | Better |
+| **qwen2.5:0.5b** | **494M** | **398 MB** | **Fast** | **Weak** (M07: top-1 moment correct 0/12, real E2E 0/3) |
+| qwen2.5:3b | 3B | 1.9 GB | Slow (51-117 s per job) | **Better** (M07: top-1 9/12, real E2E 3/3) |
 | qwen2.5:7b | 7B | 4.7 GB | Very Slow | Best |
 
-Models download manually via `ollama pull <model>`.
+Models download manually via `ollama pull <model>`. To use 3B without code changes: `OLLAMA_MODEL=qwen2.5:3b`.
+The default is still 0.5B; the measured trade-off is in `docs/M07_AI_BENCHMARK.md`.
 
 ## License
 

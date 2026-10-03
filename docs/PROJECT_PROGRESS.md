@@ -27,7 +27,184 @@ Build a completely free, local AI-powered automatic video clipper that:
 
 ---
 
-## Current Milestone: **Milestone 06 - Local Web UI**
+## Current Milestone: **Milestone 07 - End-to-End Integration, Reliability & AI Quality Evaluation**
+
+**Status: COMPLETED**
+
+### Objective
+
+Make V1 measurable and more reliable end-to-end, and investigate the known AI-quality weakness with evidence
+rather than guesses. The architecture is unchanged: **AI suggests, Python validates and decides, FFmpeg executes.**
+The default model was not changed.
+
+### Completed work
+
+| Area | Result |
+|---|---|
+| A. Regression layer | `tests/test_e2e_pipeline.py` (24 tests): real FFmpeg/FFprobe, M04, M05, M03 parsing and validation, and the M06 app; only Whisper and the Ollama daemon are faked. It auto-skips without FFmpeg. |
+| B. Real E2E harness | `benchmarks/e2e/run_real_e2e.py`, plus the opt-in `tests/test_real_e2e.py` (`CLIPPER_REAL_E2E=1`). |
+| C. Model benchmark | `benchmarks/ai/run_benchmark.py` with the labelled dataset `benchmarks/ai/dataset.json`. Results are in `docs/M07_AI_BENCHMARK.md`. |
+| D. Prompt investigation | A general-purpose v2 prompt and two delivery options were measured. The result was a trade-off, so **not adopted**. |
+| E. Repeatability | Variation comes from model sampling only. Temperature 0 + seed gives 5/5 identical outputs but no better ones. Not adopted. |
+| F. Audio-duration warning | **Real bug, fixed** (M02). |
+| G. Performance | Measured per stage on this machine (below). |
+| H. Security | No regression (below). |
+
+**Bugs found and fixed. Each was the smallest safe change, and each has a regression test:**
+
+1. **M02 `Could not determine audio duration`, which fired on every job.** `_get_audio_duration` ran
+   `ffmpeg -v error -i audio.wav -f null -` and parsed `time=` from stderr. But `-v error` suppresses that stats line, so
+   the result was **always 0.0**. The unit test hid this because it mocked stderr with a `time=` line that real FFmpeg
+   never prints at that log level.
+   - **Impact:** `TranscriptionResult.duration` silently fell back to the last speech segment's end. M03 then told the
+     model the wrong duration and rejected valid candidates in trailing non-speech. M05 itself was unaffected, because
+     it uses the probed video duration.
+   - **Fix:** read the exact duration from the WAV header that `_extract_audio` writes, using stdlib `wave`. This
+     removes one FFmpeg subprocess per job. On the real test video the old code returned 0.0 s; the fixed code
+     returns 145.197 s (FFprobe container: 146.733 s, since the audio is shorter than the video track).
+   - Tests: real WAV header, corrupt WAV → 0.0, no subprocess.
+2. **M03 wrong-shape JSON escaped as a bare `TypeError`.** For example, `[1,2]` or `{"candidates":"none"}`.
+   `parse_ai_response` raises `TypeError` for these, but `AIReasoningService` caught only `ValueError`, and M05 catches
+   `(AIError, ValueError)`. So the error crashed the CLI and showed as "unexpected error" in the UI, instead of a clean
+   `AnalysisStageError`. The fix catches `(ValueError, TypeError)` and raises `AIResponseParseError`.
+   - Tests: 5 shapes in M03, 4 through the full pipeline.
+3. **M03 `is_model_available` prefix match.** It compared the name with `startswith("qwen2.5")`, so `qwen2.5:3b` was
+   reported as installed when only `0.5b` was pulled. The check now requires an exact tag match (`name` or
+   `name:latest`). Found while preparing the 3b benchmark. Tests: 4 cases.
+
+**Supporting change:** `OllamaClient.generate(..., format="")` passes Ollama's `format` through. The default `""` is
+Ollama's own default, so M03 behaviour is unchanged. It is used only by the benchmark's JSON-mode variants.
+
+**Ruff hygiene:** the 21 pre-existing unused/unsorted-import warnings in M02/M03 test files were auto-fixed. Those
+files were edited in this milestone, and `ruff check .` is now clean repo-wide.
+
+### Tests (440 collected: 439 passed, 1 opt-in skipped)
+
+New:
+- `test_e2e_pipeline.py` (24). Covers:
+  - valid 3 × 4 s request on a real 20 s video, independently re-probed: exact durations, h264 + aac, full status sequence
+  - video-only source rejected by M05, and no invented audio in M04 extraction
+  - boundaries: near the start, near the end, exact source length, just below the source length, source too short
+  - ranking follows AI scores; duplicate and overlapping candidates collapse; insufficient candidates render nothing;
+    AI timestamps past the source are dropped
+  - failures: transcription failure, Ollama unavailable, invalid AI output (4 shapes), real FFmpeg failure on clip 2,
+    output-verification failure. In each, the real `clip_001.mp4` is removed and the user's file is kept.
+  - success keeps the outputs and pre-existing files; an existing clip name is never overwritten
+  - M06 upload → real M05 + M04 → download → re-probe at 3.000 s with audio; traversal returns 404; non-video rejected by the real probe
+- `test_benchmark_metrics.py` (9): metrics, the dataset labels never reaching the model, v1 equal to the live prompt,
+  v2 general-purpose, and the evidence metric.
+- `test_real_e2e.py` (1, opt-in): real Whisper + Ollama + FFmpeg.
+
+Regression tests were also added in `test_ai_client.py` (+4), `test_ai_service.py` (+5) and
+`test_transcription_service.py` (+2 net).
+
+Suites: transcription 48, AI 78, video 113, clipping 82, UI 85, E2E 24, benchmark 9, real-opt-in 1.
+
+### Real end-to-end results
+
+`python -m benchmarks.e2e.run_real_e2e --synthesize -n 3 -d 10 -i "funny moments" [--model ...]`. The source is a
+146.7 s 640x360 speech video, synthesized locally (Windows SAPI reading the benchmark transcript, over FFmpeg `testsrc`).
+
+| model | runs | success | notes |
+|---|---|---|---|
+| qwen2.5:3b | 3 | **3/3** | every clip probed **10.000 s**, h264 + aac; picks ranged from the explanation/Q&A segments to the intern joke |
+| qwen2.5:0.5b | 3 | **0/3** | 2 runs: zero valid candidates (e.g. three `1.0-1.0` zero-length moments, rejected by M03 → clean `InsufficientCandidatesError`); 1 run: Ollama 120 s timeout after an 18× slower transcription (outlier, cause unknown) |
+
+No run logged `Could not determine audio duration` after the fix.
+
+### Benchmark results (full detail in `docs/M07_AI_BENCHMARK.md`)
+
+Same transcript, same 4 tasks, 3 runs per cell, M03's own prompt, parser and validator.
+
+| | qwen2.5:0.5b | qwen2.5:3b |
+|---|---|---|
+| top-1 moment matches the task | **0/12** | **9/12** (funny, educational and Q&A 3/3; decision 0/3) |
+| behaviour | lists 16 of 17 segments in order, one constant score (often the prompt's example 0.91), repeated reasons | reads the content; varied scores and reasons; pads with admin/announcements (35-58 % irrelevant) |
+| timestamp validity | all valid and segment-aligned, but **attached to the wrong segment** (3/33 quotes in range on "decision") | all valid; a correct quote with times from a neighbouring/later segment (decision task: 3/3) |
+| AI time per call | 18-23 s | 13-46 s |
+
+### Model comparison
+
+qwen2.5:3b is the only change measured to make selection meaningful: 9/12 vs 0/12 top-1, and 3/3 vs 0/3 real E2E.
+It costs 1.9 GB of disk and 4-9× more AI time (51-117 s per real job). **The default stays `qwen2.5:0.5b`**, per the
+M07 rule. Switching is a project decision; it is already possible with `OLLAMA_MODEL=qwen2.5:3b` and needs no code change.
+
+### Prompt investigation
+
+The v2 prompt is general-purpose: placeholders instead of example values, quoted evidence, a score spread, times from
+the quoted segment, "leave out logistics/filler unless asked", and "return fewer rather than pad". It was measured with
+JSON mode and keyed transcript lines, plus two ablations.
+
+For 3b it raised precision (0.16 → 0.40) and lowered irrelevant picks (0.62 → 0.46), but lowered top-1 (9/12 → 6/12).
+The timestamp mis-mapping moved from the decision task to the educational/Q&A tasks.
+
+For 0.5b nothing helped. Without JSON mode it parsed only 3/12, because quoting broke its JSON.
+
+Since M05 cuts the top-ranked moments first, **no prompt or format change was adopted**. v2 stays in
+`benchmarks/ai/run_benchmark.py` as a measured experiment.
+
+### Repeatability
+
+Production prompt, 5 identical runs:
+- At M03's default temperature 0.1: 1-4/5 identical outputs (3b "funny": covered-set Jaccard 0.67).
+- At temperature 0 + seed 42: **5/5 identical in every cell**, with the same top-1 and precision.
+
+**Source of variation:**
+- **Ollama sampling only.**
+- M03 validation and M05 selection are deterministic functions of the response: rescoring identical responses gives
+  identical results.
+- The prompt is fixed.
+
+**Not adopted:** it would not improve quality, and it would make "run again" (the only recovery from insufficient
+candidates) useless. `AI_TEMPERATURE=0` already exists for users who want it.
+
+### Performance (Intel Core Ultra 5 125H, CPU only; 146.7 s video, 3 × 10 s clips)
+
+| stage | measured |
+|---|---|
+| transcription (faster-whisper small, incl. model load) | 37.0-39.3 s (~0.26× real time) |
+| AI reasoning | 0.5b 9.9-12.7 s; 3b 51.3-117.3 s |
+| selection | < 10 ms |
+| FFmpeg generation + verification | 1.67-1.71 s for 3 clips (~0.56 s per clip) |
+| total (3b, successful) | 92-158 s |
+
+### Security / architecture regression
+
+- **Local-only:** no new network calls. The benchmark and harness talk only to the local Ollama (`OLLAMA_HOST`, default localhost).
+- **No new dependencies.**
+- **Subprocess safety:** M02 lost one FFmpeg subprocess (now stdlib `wave`). The harness uses argument lists only; the
+  synthesis script gets its paths via environment variables, never interpolated into the command.
+- **No AI output is executed.** `format` is passed only as the literal `""`/`"json"` from code.
+- **M06 is untouched.** Upload validation and download security are re-verified against the real M05 + M04
+  (traversal → 404; non-video rejected by the real probe).
+- **Validation gates stayed in place:** M03 validation, M05 normalization, output isolation, all-or-nothing cleanup,
+  and M04 exact-duration verification were unchanged and are now exercised with real FFmpeg.
+- **Generated data stays out of git:** benchmark and E2E output go to `output/` (gitignored). No secrets.
+
+### Decisions
+
+1. **Default model stays `qwen2.5:0.5b`.** The evidence for 3b is documented, and the switch is left to the project.
+2. **Production prompt and transcript format unchanged.** v2 was measured as a trade-off.
+3. **No fixed seed.** Repeatability without a quality gain, at the cost of retries.
+4. **Fixed only the real bugs** found by measurement (M02 duration, M03 TypeError, M03 model tag), each with a regression test.
+5. **Real-model tests are opt-in.** Normal `pytest` never needs Ollama or Whisper; FFmpeg tests auto-skip.
+
+### Known limitations
+
+1. qwen2.5:0.5b does not perform semantic selection (0/12). V1 clip choice with the default model is effectively arbitrary.
+2. qwen2.5:3b attaches correct quotes to wrong timestamps in some tasks, and pads its lists with irrelevant moments.
+3. Model output varies run to run at the default temperature, so a request can succeed once and fail later.
+4. One AI pass; no retry or second pass when there are too few candidates.
+5. The Whisper model still loads once per job (~part of the 37-39 s; not optimized, by design).
+6. `ClipGenerationResult.candidates_returned` reports M03's *valid* count; candidates rejected by M03 are invisible to M05 ("AI returned 0").
+7. The benchmark dataset is one synthetic 150 s English meeting with 3 runs per cell: indicative, not statistically strong.
+8. `--synthesize` for the real E2E harness is Windows-only (SAPI). Elsewhere, pass `--video` with any local speech video.
+9. One unexplained slow run (689 s transcription) was observed during the real E2E series.
+
+---
+
+## Milestone 06 - Local Web UI
+
 
 **Status: COMPLETED**
 
@@ -555,7 +732,7 @@ It also checked that a clip past the source end is rejected with no output writt
 | Pip | ✅ Upgraded | 26.2.1 |
 | Git | ✅ Initialized | Clean, main branch |
 | FFmpeg | ✅ Available | 9.0.2 (winget, in PATH) |
-| Ollama | ✅ Running | 0.32.15, `qwen2.5:0.5b` pulled |
+| Ollama | ✅ Running | 0.32.15, `qwen2.5:0.5b` (default) and `qwen2.5:3b` (M07 benchmark, user-approved pull) |
 | Dependencies | ✅ Installed | 24 packages |
 
 ---
@@ -612,12 +789,14 @@ It also checked that a clip past the source end is rejected with no output writt
 
 ---
 
-## Next Milestone: **Milestone 07 - End-to-End Integration & Testing**
+## Next Milestone: **Milestone 08 - Selection Quality: Model Decision & Timestamp Grounding** (recommended)
 
-### Scope
-- Scripted real end-to-end runs (CLI and web UI) over several local synthetic videos and all five containers
-- Integration tests exercising M02 -> M03 -> M04 -> M05 -> M06 together, auto-skipping when FFmpeg/Ollama/Whisper are absent
-- Fix integration issues found; measure and document CPU timing
+M07 showed that clip *selection* quality is now the product bottleneck. Mechanics are reliable and measured, but the
+default model does not select meaningfully. Recommended scope, to be confirmed by the project architect:
+- Decide the default model from `docs/M07_AI_BENCHMARK.md` (0.5b vs 3b: quality vs ~1-2 min AI time per job).
+- Timestamp grounding: the model cites the words it chose and Python locates them verbatim in the transcript
+  (deterministic mapping, no semantic rules), then re-measure with `benchmarks/ai/run_benchmark.py`.
+- Optionally one bounded retry pass when there are too few distinct candidates.
 
 ---
 
@@ -686,18 +865,28 @@ D:\video_scliser\
 │   ├── test_video_integration.py
 │   ├── test_clipping_selection.py
 │   ├── test_clipping_service.py
-│   └── test_ui.py
+│   ├── test_ui.py
+│   ├── test_e2e_pipeline.py      # M07 deterministic E2E (real FFmpeg, fake Whisper/Ollama)
+│   ├── test_benchmark_metrics.py
+│   └── test_real_e2e.py          # opt-in: CLIPPER_REAL_E2E=1
+├── benchmarks/
+│   ├── ai/
+│   │   ├── dataset.json          # labelled 150 s benchmark transcript
+│   │   └── run_benchmark.py      # model / prompt / repeatability benchmark
+│   └── e2e/
+│       └── run_real_e2e.py       # real Whisper + Ollama + FFmpeg harness with stage timings
 ├── input/
 ├── output/
 ├── docs/
-│   └── PROJECT_PROGRESS.md
+│   ├── PROJECT_PROGRESS.md
+│   └── M07_AI_BENCHMARK.md
 ├── readme.txt             # Original file (preserved)
 ├── README.md
 ├── requirements.txt
 └── .gitignore
 ```
 
-**Git Commit:** `feat: add local Flask web interface`
+**Git Commit:** `feat: validate end-to-end pipeline and benchmark ai quality`
 
 ---
 

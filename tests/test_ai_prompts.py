@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import json
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
 
 from app.ai.prompts import (
-    SYSTEM_PROMPT,
-    USER_PROMPT_TEMPLATE,
-    format_transcript_for_prompt,
     build_prompt,
+    format_transcript_for_prompt,
     parse_ai_response,
 )
-from app.ai.models import ClipCandidate
-from app.transcription.models import TranscriptSegment, TranscriptionResult, WordTimestamp
+from app.transcription.models import (
+    TranscriptionResult,
+    TranscriptSegment,
+)
 
 
 class TestFormatTranscriptForPrompt:

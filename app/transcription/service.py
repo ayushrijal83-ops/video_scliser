@@ -4,6 +4,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import wave
 from pathlib import Path
 
 from faster_whisper import WhisperModel  # type: ignore[import-untyped]
@@ -119,29 +120,18 @@ class TranscriptionService:
             raise AudioExtractionError(str(input_path), "output file is empty")
 
     def _get_audio_duration(self, audio_path: Path) -> float:
-        ffmpeg = self._check_ffmpeg()
-        cmd = [
-            ffmpeg,
-            "-v", "error",
-            "-i", str(audio_path),
-            "-f", "null",
-            "-",
-        ]
+        """Exact duration from the WAV header written by _extract_audio (PCM s16le, 16 kHz mono).
+
+        This used to parse `time=` from `ffmpeg -v error -f null`, but `-v error` suppresses that
+        stats line, so the result was always 0.0.
+        """
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
-        except (OSError, subprocess.SubprocessError) as e:
+            with wave.open(str(audio_path), "rb") as wav:
+                rate = wav.getframerate()
+                return wav.getnframes() / rate if rate > 0 else 0.0
+        except (OSError, EOFError, wave.Error) as e:
             logger.warning("Could not determine audio duration: %s", e)
             return 0.0
-
-        if result.returncode != 0:
-            return 0.0
-
-        import re
-        duration_match = re.search(r"time=(\d+):(\d+):(\d+\.\d+)", result.stderr)
-        if duration_match:
-            h, m, s = duration_match.groups()
-            return int(h) * 3600 + int(m) * 60 + float(s)
-        return 0.0
 
     def transcribe(self, input_path: str, language: str | None = None) -> TranscriptionResult:
         validated_path = self._validate_input_file(input_path)

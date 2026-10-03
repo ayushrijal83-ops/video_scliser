@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-import pytest
-from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
+from unittest.mock import Mock, patch
 
-from app.transcription.service import TranscriptionService, transcribe_file
+import pytest
+
 from app.transcription.exceptions import (
-    InputFileNotFoundError,
-    UnsupportedMediaFormatError,
-    FFmpegNotFoundError,
+    AudioExtractionError,
+    EmptyAudioError,
     FFmpegExecutionError,
+    FFmpegNotFoundError,
+    InputFileNotFoundError,
     InvalidModelConfigurationError,
     ModelNotAvailableError,
     TranscriptionFailedError,
-    EmptyAudioError,
-    AudioExtractionError,
+    UnsupportedMediaFormatError,
 )
-from app.transcription.models import TranscriptSegment, WordTimestamp
+from app.transcription.service import TranscriptionService, transcribe_file
 
 
 class TestTranscriptionServiceInit:
@@ -219,16 +219,33 @@ class TestTranscribeFileConvenience:
 
 
 class TestGetAudioDuration:
-    @patch("app.transcription.service.shutil.which")
-    @patch("app.transcription.service.subprocess.run")
-    def test_duration_parsing(self, mock_run: Mock, mock_which: Mock, tmp_path: Path) -> None:
-        mock_which.return_value = "/usr/bin/ffmpeg"
-        mock_run.return_value = Mock(
-            returncode=0,
-            stderr="time=00:00:05.50 bitrate=...",
-        )
-        service = TranscriptionService()
+    """Regression: the old ffmpeg `-v error` parser always returned 0.0 on real FFmpeg."""
+
+    def test_duration_from_real_wav_header(self, tmp_path: Path) -> None:
+        import wave
+
         audio_path = tmp_path / "audio.wav"
-        audio_path.write_text("fake")
-        duration = service._get_audio_duration(audio_path)
-        assert duration == 5.5
+        with wave.open(str(audio_path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 88000)  # 5.5 s
+        assert TranscriptionService()._get_audio_duration(audio_path) == 5.5
+
+    def test_corrupt_wav_returns_zero(self, tmp_path: Path) -> None:
+        audio_path = tmp_path / "audio.wav"
+        audio_path.write_text("not a wav")
+        assert TranscriptionService()._get_audio_duration(audio_path) == 0.0
+
+    @patch("app.transcription.service.subprocess.run")
+    def test_no_subprocess_needed(self, mock_run: Mock, tmp_path: Path) -> None:
+        import wave
+
+        audio_path = tmp_path / "audio.wav"
+        with wave.open(str(audio_path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 16000)
+        assert TranscriptionService()._get_audio_duration(audio_path) == 1.0
+        mock_run.assert_not_called()

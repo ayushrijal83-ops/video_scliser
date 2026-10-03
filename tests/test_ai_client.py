@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from unittest.mock import Mock, patch
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
 
 from app.ai.client import OllamaClient, OllamaConfig, create_ollama_client
-from app.ai.exceptions import OllamaUnavailableError, OllamaModelUnavailableError, AIInferenceError
+from app.ai.exceptions import (
+    AIInferenceError,
+    OllamaModelUnavailableError,
+    OllamaUnavailableError,
+)
 
 
 class TestOllamaConfig:
@@ -80,6 +85,22 @@ class TestOllamaClient:
 
         assert client.is_model_available("qwen2.5:0.5b") is False
 
+    @pytest.mark.parametrize(
+        ("installed", "wanted", "expected"),
+        [
+            (["qwen2.5:0.5b"], "qwen2.5:3b", False),  # regression (M07): prefix match said True
+            (["qwen2.5:0.5b", "qwen2.5:3b"], "qwen2.5:3b", True),
+            (["qwen2.5:latest"], "qwen2.5", True),
+            (["qwen2.5:0.5b"], "qwen2.5", False),
+        ],
+    )
+    def test_is_model_available_exact_tag(self, installed: list[str], wanted: str, expected: bool) -> None:
+        mock_client = Mock()
+        mock_client.list.return_value = {"models": [{"name": n} for n in installed]}
+        client = OllamaClient(self.config)
+        client._client = mock_client
+        assert client.is_model_available(wanted) is expected
+
     @patch("app.ai.client.Client")
     def test_generate_success(self, mock_client_class: Mock) -> None:
         mock_client = Mock()
@@ -96,6 +117,7 @@ class TestOllamaClient:
             prompt="test prompt",
             stream=False,
             options={},
+            format="",
         )
 
     @patch("app.ai.client.Client")

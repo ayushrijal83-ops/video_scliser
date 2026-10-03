@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import json
-import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
-from app.ai.service import AIReasoningService, AIReasoningConfig, analyze_transcript
+import pytest
+
 from app.ai.client import OllamaClient, OllamaConfig
-from app.ai.models import ClipCandidate, ClipAnalysisResult
 from app.ai.exceptions import (
-    OllamaUnavailableError,
-    OllamaModelUnavailableError,
     AIInferenceError,
     AIResponseParseError,
-    InvalidCandidateError,
-    InvalidConfigurationError,
     EmptyTranscriptError,
+    InvalidConfigurationError,
+    OllamaModelUnavailableError,
+    OllamaUnavailableError,
 )
-from app.transcription.models import TranscriptSegment, TranscriptionResult
+from app.ai.models import ClipAnalysisResult
+from app.ai.service import AIReasoningConfig, AIReasoningService, analyze_transcript
+from app.transcription.models import TranscriptionResult, TranscriptSegment
 
 
 class TestAIReasoningConfig:
@@ -136,6 +136,17 @@ class TestAIReasoningService:
         transcript = self._make_transcript()
         with pytest.raises(AIResponseParseError):
             self.service.analyze(transcript, "Find moments")
+
+    @pytest.mark.parametrize(
+        "response", ['[1, 2]', '"text"', '{"candidates": "none"}', '{"candidates": [1]}', '{"other": []}']
+    )
+    def test_analyze_wrong_shape_json_is_parse_error(self, response: str) -> None:
+        """Regression (M07): valid JSON of the wrong shape used to escape as a bare TypeError."""
+        self.mock_client.is_available.return_value = True
+        self.mock_client.is_model_available.return_value = True
+        self.mock_client.generate.return_value = response
+        with pytest.raises(AIResponseParseError):
+            self.service.analyze(self._make_transcript(), "Find moments")
 
     def test_analyze_empty_candidates(self) -> None:
         self.mock_client.is_available.return_value = True

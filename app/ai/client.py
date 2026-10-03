@@ -86,8 +86,10 @@ class OllamaClient:
             models = client.list()
             # Handle both dict and object response formats
             model_list = models.get("models", []) if isinstance(models, dict) else getattr(models, "models", [])
+            # Exact tag match: a "qwen2.5" prefix check would accept qwen2.5:3b when only 0.5b is pulled.
+            wanted = model_name if ":" in model_name else f"{model_name}:latest"
             return any(
-                (m.get("name", "") if isinstance(m, dict) else getattr(m, "model", "")).startswith(model_name.split(":")[0])
+                (m.get("name", "") if isinstance(m, dict) else getattr(m, "model", "")) in (model_name, wanted)
                 for m in model_list
             )
         except (ConnectionError, OSError, TimeoutError, AttributeError) as e:
@@ -100,8 +102,9 @@ class OllamaClient:
         model: str | None = None,
         options: dict | None = None,
         stream: bool = False,
+        format: str = "",
     ) -> str:
-        """Generate a response from the model."""
+        """Generate a response from the model. format="json" constrains output to valid JSON."""
         model_name = model or self.config.model
         client = self._get_client()
 
@@ -111,6 +114,7 @@ class OllamaClient:
                 prompt=prompt,
                 stream=stream,
                 options=options or {},
+                format=format,
             )
             return response.get("response", "")
         except ResponseError as e:

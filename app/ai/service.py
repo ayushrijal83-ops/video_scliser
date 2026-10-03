@@ -174,7 +174,7 @@ class AIReasoningService:
         # Parse response
         try:
             raw_candidates = parse_ai_response(response_text, self.config.max_candidates)
-        except ValueError as e:
+        except (ValueError, TypeError) as e:  # TypeError: valid JSON of the wrong shape
             raise AIResponseParseError(response_text, str(e)) from e
 
         if not raw_candidates:

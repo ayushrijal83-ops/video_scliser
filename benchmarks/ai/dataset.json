@@ -1,0 +1,30 @@
+{
+  "description": "Synthetic 150 s team-meeting transcript with one known category per segment. Labels are used only to score model output and are never sent to the model.",
+  "duration": 150.0,
+  "segments": [
+    {"start": 0.0, "end": 7.5, "label": "filler", "text": "Okay, um, can everyone hear me? Let me just share my screen. Give me one second."},
+    {"start": 7.5, "end": 15.0, "label": "admin", "text": "Good morning. Agenda today: budget update, the caching project, and then open questions."},
+    {"start": 15.0, "end": 23.0, "label": "admin", "text": "The budget for this quarter is unchanged. Finance has approved the same numbers as last quarter."},
+    {"start": 23.0, "end": 34.0, "label": "educational", "text": "So, quick explanation of why the app got faster. A cache keeps a copy of data we already fetched, so the next request skips the database. Reads went from two hundred milliseconds to five."},
+    {"start": 34.0, "end": 44.0, "label": "joke", "text": "Our intern tried to fix the printer by apologising to it. It worked better than our last three IT tickets, so we are now promoting the printer to team lead."},
+    {"start": 44.0, "end": 51.0, "label": "announcement", "text": "Reminder: the office closes early on Friday, and the kitchen will be cleaned on Thursday."},
+    {"start": 51.0, "end": 58.0, "label": "filler", "text": "Uh, sorry, where was I. Yeah. Let me find the next slide. Okay."},
+    {"start": 58.0, "end": 70.0, "label": "educational", "text": "The catch with caching is invalidation. If the data changes and the cache does not, users see stale results. We fixed that by expiring entries after sixty seconds and clearing them on every write."},
+    {"start": 70.0, "end": 77.0, "label": "admin", "text": "Please submit your timesheets by Monday. The template is in the shared folder."},
+    {"start": 77.0, "end": 85.0, "label": "qa", "text": "Question from Priya: does the cache work for logged-out users too, or only for people who are signed in?"},
+    {"start": 85.0, "end": 94.0, "label": "qa", "text": "Good question. Yes, logged-out pages are cached even more aggressively, because they are the same for everyone."},
+    {"start": 94.0, "end": 103.0, "label": "joke", "text": "Why did the developer go broke? Because he used up all his cache. Thank you, I will be here all week, please tip your server."},
+    {"start": 103.0, "end": 110.0, "label": "announcement", "text": "Also, the parking garage on level two is closed for repairs starting next week."},
+    {"start": 110.0, "end": 117.0, "label": "filler", "text": "Mm-hm. Right. Okay, okay. Let me check the chat. Nothing there."},
+    {"start": 117.0, "end": 132.0, "label": "conclusion", "text": "So here is the decision: we roll the cache out to all customers next Tuesday. That cuts our server costs by about forty percent, which is the single biggest saving we have made this year."},
+    {"start": 132.0, "end": 141.0, "label": "admin", "text": "The next meeting is the same time next week. I will send the calendar invite after this call."},
+    {"start": 141.0, "end": 150.0, "label": "filler", "text": "Okay, that is everything. Thanks everyone, bye. Bye bye. See you."}
+  ],
+  "tasks": [
+    {"id": "funny", "instruction": "funny moments", "target": "joke"},
+    {"id": "educational", "instruction": "educational explanations that teach something", "target": "educational"},
+    {"id": "decision", "instruction": "the most important decision or conclusion", "target": "conclusion"},
+    {"id": "qa", "instruction": "audience questions and their answers", "target": "qa"}
+  ],
+  "irrelevant_labels": ["filler", "admin", "announcement"]
+}

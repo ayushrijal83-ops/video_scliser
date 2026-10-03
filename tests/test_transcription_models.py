@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from app.transcription.models import TranscriptSegment, WordTimestamp, TranscriptionResult
 from app.transcription.exceptions import (
-    TranscriptionError,
-    InputFileNotFoundError,
-    UnsupportedMediaFormatError,
     FFmpegNotFoundError,
+    InputFileNotFoundError,
     InvalidModelConfigurationError,
+    TranscriptionError,
+    UnsupportedMediaFormatError,
+)
+from app.transcription.models import (
+    TranscriptionResult,
+    TranscriptSegment,
+    WordTimestamp,
 )
 
 

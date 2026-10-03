@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 import pytest
-import json
 
-from app.ai.models import ClipCandidate, ClipAnalysisResult
 from app.ai.exceptions import (
     AIError,
-    OllamaUnavailableError,
-    OllamaModelUnavailableError,
     AIInferenceError,
     AIResponseParseError,
+    EmptyTranscriptError,
     InvalidCandidateError,
     InvalidConfigurationError,
+    OllamaModelUnavailableError,
+    OllamaUnavailableError,
     TranscriptTooLargeError,
-    EmptyTranscriptError,
 )
+from app.ai.models import ClipAnalysisResult, ClipCandidate
 
 
 class TestClipCandidate:
