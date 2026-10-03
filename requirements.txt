@@ -27,3 +27,7 @@ torch>=2.4.0 --index-url https://download.pytorch.org/whl/cpu
 # Milestone 03: AI Reasoning Module
 # Ollama Python client for local LLM inference
 ollama>=0.3.0
+
+# Milestone 06: Local Web UI
+# Flask (Werkzeug + Jinja2) for the localhost-only browser interface
+flask>=3.0

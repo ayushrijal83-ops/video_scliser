@@ -1,0 +1,19 @@
+body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 0 auto; padding: 0 1rem; color: #1d1d1f; background: #fafafa; line-height: 1.5; }
+header { padding: 1rem 0; border-bottom: 1px solid #ddd; font-weight: 600; }
+header a { color: inherit; text-decoration: none; }
+footer { margin: 3rem 0 1rem; font-size: .85rem; color: #666; }
+label { display: block; margin-top: 1rem; font-weight: 600; }
+input { width: 100%; box-sizing: border-box; padding: .5rem; font: inherit; }
+button, .button { display: inline-block; margin-top: 1.25rem; padding: .6rem 1.2rem; background: #2457d6; color: #fff; border: 0; border-radius: 4px; font: inherit; text-decoration: none; cursor: pointer; }
+button:disabled { background: #888; cursor: wait; }
+.error { padding: .75rem; background: #fde8e8; border-left: 4px solid #c62828; }
+.note { color: #555; font-size: .9rem; }
+.stages .done { color: #2e7d32; }
+.stages .current { font-weight: 600; }
+.stages .todo { color: #888; }
+.summary { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; }
+.summary dt { font-weight: 600; }
+.summary dd { margin: 0; }
+.clip { margin-top: 1.5rem; padding: 1rem; background: #fff; border: 1px solid #ddd; border-radius: 4px; }
+.clip h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+.clip p { margin: .25rem 0; }

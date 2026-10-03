@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block head %}<meta http-equiv="refresh" content="3">{% endblock %}
+{% block title %}Processing - Local AI Video Clipper{% endblock %}
+{% block content %}
+<h1>Processing {{ job.original_name }}</h1>
+<p role="status">Processing locally &mdash; transcription, AI analysis and clip generation are in progress.
+This may take several minutes on CPU. This page refreshes automatically.</p>
+<ol class="stages">
+  {% for status, label in stages %}
+  <li class="{{ 'done' if loop.index0 < current else 'current' if loop.index0 == current else 'todo' }}">
+    {{ label }}{% if loop.index0 == current %} <span class="note">(in progress)</span>{% endif %}
+  </li>
+  {% endfor %}
+</ol>
+<p class="note">Elapsed: {{ job.elapsed|round|int }} s</p>
+{% endblock %}

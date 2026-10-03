@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Clips ready - Local AI Video Clipper{% endblock %}
+{% block content %}
+<h1>{{ result.clips|length }} clips ready</h1>
+<dl class="summary">
+  <dt>Original video</dt><dd>{{ job.original_name }}</dd>
+  <dt>Requested clips</dt><dd>{{ result.requested_count }}</dd>
+  <dt>Requested duration</dt><dd>{{ '%.3f'|format(result.requested_duration) }} sec</dd>
+  <dt>Focus</dt><dd>{{ result.instruction }}</dd>
+  <dt>AI model</dt><dd>{{ result.model_name }} ({{ result.candidates_valid }} valid candidates)</dd>
+  <dt>Processing time</dt><dd>{{ job.elapsed|round|int }} s</dd>
+</dl>
+{% for clip in result.clips %}
+{% set name = clip.path|basename %}
+<section class="clip">
+  <h2>Clip {{ clip.index }}{% if clip.title %}: {{ clip.title }}{% endif %}</h2>
+  <p>{{ '%.3f'|format(clip.actual_duration) }} sec &middot; {{ clip.start|timecode }} &rarr; {{ clip.end|timecode }}
+     &middot; Score: {{ '%.2f'|format(clip.score) }}</p>
+  <p>Reason: {{ clip.reason or '(none given)' }}</p>
+  <a class="button" href="{{ url_for('download', job_id=job.id, name=name) }}" download>Download {{ name }}</a>
+</section>
+{% endfor %}
+<p><a href="{{ url_for('index') }}">Generate more clips</a></p>
+{% endblock %}

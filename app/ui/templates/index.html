@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Generate clips</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form id="job-form" method="post" action="{{ url_for('create_job') }}" enctype="multipart/form-data">
+  <label for="video">Video ({{ extensions }}, up to {{ max_upload_mb }} MB)</label>
+  <input id="video" name="video" type="file" accept="{{ accept }}" required>
+
+  <label for="clip_count">Number of clips (1-{{ max_count }})</label>
+  <input id="clip_count" name="clip_count" type="number" min="1" max="{{ max_count }}" step="1"
+         value="{{ form.get('clip_count', 3) }}" required>
+
+  <label for="clip_duration">Duration per clip, seconds ({{ min_duration|int }}-{{ max_duration|int }})</label>
+  <input id="clip_duration" name="clip_duration" type="number" min="{{ min_duration }}" max="{{ max_duration }}"
+         step="any" value="{{ form.get('clip_duration', 30) }}" required>
+
+  <label for="instruction">Focus (optional)</label>
+  <input id="instruction" name="instruction" type="text" maxlength="{{ max_instruction }}"
+         placeholder="interesting moments" value="{{ form.get('instruction', '') }}">
+
+  <button id="submit" type="submit">Generate Clips</button>
+  <p id="uploading" class="note" hidden role="status">Uploading the video&hellip; processing starts right after.</p>
+</form>
+<p class="note">Processing runs on your CPU and can take several minutes: transcription, AI analysis, then clip cutting.</p>
+<script>
+  document.getElementById("job-form").addEventListener("submit", function () {
+    document.getElementById("submit").disabled = true;
+    document.getElementById("uploading").hidden = false;
+  });
+</script>
+{% endblock %}

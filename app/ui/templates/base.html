@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% block head %}{% endblock %}
+  <title>{% block title %}Local AI Video Clipper{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header><a href="{{ url_for('index') }}">Local AI Video Clipper</a></header>
+  <main>{% block content %}{% endblock %}</main>
+  <footer>Runs entirely on this computer: faster-whisper, Ollama and FFmpeg. Nothing is uploaded to the internet.</footer>
+</body>
+</html>

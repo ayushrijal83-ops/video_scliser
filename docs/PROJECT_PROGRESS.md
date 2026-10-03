@@ -27,7 +27,183 @@ Build a completely free, local AI-powered automatic video clipper that:
 
 ---
 
-## Current Milestone: **Milestone 05 - Automatic Clip Selection & Generation**
+## Current Milestone: **Milestone 06 - Local Web UI**
+
+**Status: COMPLETED**
+
+### Architecture
+
+```
+Browser ──HTTP (127.0.0.1)──> Flask UI (app/ui) ──ClipJobRequest──> M05 ClipGenerationService ──> M02 + M03 + M04 ──> clips
+
+app/ui/
+├── __init__.py      # exports create_app, UIConfig
+├── __main__.py      # python -m app.ui (warns if bound beyond localhost)
+├── config.py        # UIConfig: host, port, upload/output dirs, max upload MB, debug; CLIPPER_* env overrides
+├── app.py           # create_app() factory, routes, upload/form validation, safe downloads, error pages
+├── jobs.py          # Job, JobStore (one running job), run_job worker, friendly_error mapping
+├── templates/       # base, index, progress, result, error (Jinja, autoescaped)
+└── static/style.css
+```
+
+The suggested `routes.py` / `forms.py` were not split out: the routes and form parsing fit in `app.py`, and the form
+validation is M05's own `ClipJobRequest`. The UI contains no Whisper, Ollama, prompt, selection, overlap, window or FFmpeg
+logic, and a test greps the UI sources to enforce that. The UI only builds a `ClipJobRequest`, calls
+`ClipGenerationService.generate` and renders the `ClipGenerationResult`.
+
+**Sync vs async.** M05 stays synchronous. The UI runs one `generate()` call in a single daemon thread per job, so the
+browser does not wait minutes on one request (Firefox drops responses after 300 s). This is not a queue: one job runs at
+a time, and a second submit gets HTTP 409 "Another job is still running". The progress page refreshes itself every 3 s
+(`<meta refresh>`, no JavaScript polling) and shows the **real** M05 stage reported through `on_status`. It shows no
+percentages and no M05 detail strings, because those can contain paths.
+
+### Routes
+
+| Route | Purpose |
+|---|---|
+| `GET /` | form: video, number of clips, duration, focus (optional, default "interesting moments") |
+| `POST /jobs` | validate, store the upload, probe it, start the job, `303` → `/jobs/<id>`; invalid input returns 400 with the form re-filled |
+| `GET /jobs/<id>` | progress page while running, result page when completed, error page when failed |
+| `GET /jobs/<id>/clips/<name>` | download one generated clip (attachment) |
+| `/static/style.css` | stylesheet |
+
+There is no generic `?path=` endpoint.
+
+### Validation (all before M05 starts)
+
+1. The `video` part is present and its filename is non-empty after stripping any client-side directories.
+2. The extension is in M04's `SUPPORTED_EXTENSIONS` (`.mp4 .mkv .mov .avi .webm`). The browser MIME type is ignored.
+3. Count is parsed as `int` and duration as `float`, with a friendly message on garbage. **`ClipJobRequest`** then enforces
+   1-20 clips, 1-600 s, finite values and focus ≤ 500 chars, so no business rules are duplicated.
+4. Size: `MAX_CONTENT_LENGTH` = 2048 MB (configurable) → 413 page. The file must not be empty.
+5. **M04 probe** (`VideoService.probe`): the file must be a real video in an allowed container, otherwise the user sees
+   "could not be read as a supported video". M05's first stage still checks for a too-short video or no audio and reports
+   both as friendly errors within seconds.
+
+### Upload & storage
+
+- `job_id = uuid4().hex`. Upload: `<upload_dir>/<job_id>/source<.ext>`. Output: `<output_dir>/<job_id>/`. Both roots are resolved at startup.
+- The client filename is never used as a path. It is only displayed (escaped, at most 120 chars, basename only).
+- Werkzeug streams the upload to disk (`FileStorage.save`), and the video is never loaded into RAM.
+
+### Download security
+
+All of these must hold, otherwise the response is 404:
+- `job_id` matches `^[0-9a-f]{32}$` and names a completed job in memory.
+- `name` matches `^clip_\d{3}\.mp4$` **and** is one of that job's result clips.
+- The resolved path stays inside `<output_dir>/<job_id>`.
+
+`send_from_directory` re-checks the join and also returns 404 for missing files.
+
+### Errors
+
+`friendly_error()` maps exceptions to fixed user text. The raw exception message is never rendered, because M05 messages
+can contain absolute paths or FFmpeg output. Mapped cases:
+- video shorter than the clip
+- "Only N sufficiently distinct moments were found, but M were requested"
+- transcription failed
+- Ollama not running
+- Qwen model unavailable (`ollama pull <model>`)
+- AI analysis failed
+- video processing failed at clip N
+- no audio
+- unreadable video
+- FFmpeg missing
+- unexpected error
+
+Technical details go to the server log (`logger.warning` / `logger.exception`). Flask debug is off, so no tracebacks are shown.
+
+### Cleanup policy
+
+- The upload directory is **always** deleted when the job ends, successful or failed (the clips are already cut by then).
+- On a failed job, M05 removes its partial clips and the UI also removes `<output_dir>/<job_id>`.
+- On a validation failure, the upload directory is removed immediately.
+- At startup, leftover `<upload_dir>/<uuid-hex>/` folders from a server stopped mid-job are removed. Other folders are left alone.
+- Successful clips stay in `output/ui_jobs/<job_id>/` until the user deletes them. There is no automatic expiry.
+
+### Configuration
+
+| Variable | Default |
+|---|---|
+| `CLIPPER_HOST` | `127.0.0.1` |
+| `CLIPPER_PORT` | 5000 |
+| `CLIPPER_UPLOAD_DIR` | `input/ui_uploads` |
+| `CLIPPER_OUTPUT_DIR` | `output/ui_jobs` |
+| `CLIPPER_MAX_UPLOAD_MB` | 2048 |
+| `CLIPPER_DEBUG` | off |
+
+Binding beyond localhost requires setting `CLIPPER_HOST` explicitly, and it logs a warning.
+
+### Dependencies
+
+`flask>=3.0` (3.1.3 installed; brings Werkzeug, Jinja2, itsdangerous, click, blinker). No JS framework, database, Redis or Celery.
+
+### Tests (85 new, 395 total) - `tests/test_ui.py`
+
+The tests use the Flask test client. M05 is replaced by a fake service that writes real files or raises, and the probe is
+injected. No Ollama, Whisper, FFmpeg, browser or network is needed. Covered:
+- **App and config:** factory (independent apps), upload-limit config, local-binding defaults, debug off by default, env overrides.
+- **Pages:** home page (GET, labels, form fields), static CSS.
+- **Upload validation:** missing upload, empty filename, 5 unsupported extensions, empty file, malformed file (probe),
+  ffprobe missing, oversized upload (413), 5 traversal filenames.
+- **Form validation:** 6 invalid counts, 8 invalid durations, too-long focus, blank focus default, form values kept after an error.
+- **Generation:** valid upload → M05 request, success redirect, upload deleted after success.
+- **Result and progress pages:** result metadata (timecodes, score, escaped AI reason, download links), no internal paths
+  on the page, progress page shows the real stage with no percentages, concurrent submit → 409.
+- **Failures:** 8 M05 failure types → friendly text with no paths or tracebacks, **and cleanup on the failed job**;
+  Ollama-down, model-missing and unreadable-source messages.
+- **Downloads:** valid download, nonexistent clip, deleted file, 9 arbitrary-path/traversal attempts, job ID validation,
+  unknown job, output-path traversal via a tampered result, downloads only for completed jobs.
+- **Other:** stale-upload cleanup, timecode, no subprocess from the UI, no pipeline logic in the UI sources,
+  no secrets or external URLs in templates.
+
+### Quality Gates
+
+- Pytest: **395 passed** (M02, M03, M04 and M05 suites all green).
+- Ruff: `app/ui` and `tests/test_ui.py` are clean. The 21 pre-existing import warnings in M02/M03 test files are unchanged.
+- MyPy: `mypy app` is clean. `mypy --strict app/ui tests/test_ui.py` reports no errors in the new files.
+
+### Real Local UI Verification (Chrome, 2026-10-03)
+
+The source was synthesized locally from a Windows SAPI TTS script containing two jokes, muxed with FFmpeg `testsrc` into
+`meeting.mp4` (41.7 s, 640x360, h264/aac). Nothing was downloaded. The server ran with `python -m app.ui` on `http://127.0.0.1:5000/`.
+
+1. The home page opened with the form and the format/limit hints.
+2. Uploading `notes.txt` showed the inline error "Unsupported file type. Allowed formats: AVI, MKV, MOV, MP4, WEBM.", and the form kept its values.
+3. `meeting.mp4`, 2 clips × 10 s, "funny moments", with **Ollama stopped**: the processing page showed "Checking the video ✓ →
+   Transcribing speech (in progress)", then "Finding moments ... (in progress)". It ended with **"Ollama is not running. Start Ollama
+   and try again."**, and `input/ui_uploads` and `output/ui_jobs` were empty afterwards.
+4. With Ollama started (`qwen2.5:0.5b`), the same request completed in **34 s**. The result page showed: meeting.mp4, 2 requested,
+   10.000 sec, qwen2.5:0.5b (9 valid candidates). Clip 1: 00:00:06.500 → 00:00:16.500, score 0.91, reason "A joke about the printer
+   fix and the developer's financial situation". Clip 2 followed.
+5. Both download links returned 200 as attachments (188 KB and 180 KB). The downloaded files probe as **10.000000 s, h264 + aac**.
+   `/jobs/<id>/clips/..%2F..%2F..%2FREADME.md` and `/download?path=C:\Windows\win.ini` both returned 404.
+6. After the successful job the upload folder was empty, and only `output/ui_jobs/<id>/clip_001.mp4` and `clip_002.mp4` remained.
+
+### Security
+
+- Localhost binding and debug off by default. No `SECRET_KEY`, sessions, cookies or credentials are needed or present.
+- Generated storage names, UUID job IDs, `pathlib` resolution with containment checks, extension allowlist plus FFprobe check, and a size limit.
+- Downloads are limited to regex-valid names listed in a completed job's in-memory result.
+- No subprocess or shell in the UI (test-enforced). The focus text reaches M05 only as data (it goes into the LLM prompt), and AI output is rendered autoescaped.
+- No external network calls, CDN assets or fonts.
+
+### Known Limitations
+
+1. Job state is in memory. A server restart forgets the result pages (the clips stay on disk) and loses any in-flight job
+   (its upload is cleaned up on the next start).
+2. One job at a time, and no cancellation from the browser. Stopping the server stops the job.
+3. No CSRF token and no Host-header check. That is acceptable for a localhost-only single-user tool, but not if the server is exposed on a network.
+4. The progress page shows stages, not percentages, because M05 reports nothing finer.
+5. The UI runs on the Werkzeug development server, which is fine for local single-user use. An upload over the limit may show as a
+   connection reset in some browsers before the 413 page renders.
+6. There is no in-browser preview player; clips must be downloaded.
+7. Each job builds fresh M02/M03 services, so the Whisper model is reloaded for every job (a few seconds).
+8. Selection quality is still bounded by qwen2.5:0.5b (see M05).
+
+---
+
+## Milestone 05 - Automatic Clip Selection & Generation
 
 **Status: COMPLETED** - first complete product pipeline (core V1).
 
@@ -436,15 +612,12 @@ It also checked that a clip past the source end is rejected with no output writt
 
 ---
 
-## Next Milestone: **Milestone 06 - Local Web UI (Flask)**
+## Next Milestone: **Milestone 07 - End-to-End Integration & Testing**
 
 ### Scope
-- Local-only Flask UI: upload/select a video, enter clip count, duration and instruction
-- Run `ClipGenerationService.generate` and show the `on_status` progress stages
-- List and preview the generated clips from the result; show `ClipGenerationError` stage and message on failure
-
-### Dependencies to Add
-- `flask` (local server only, bound to 127.0.0.1)
+- Scripted real end-to-end runs (CLI and web UI) over several local synthetic videos and all five containers
+- Integration tests exercising M02 -> M03 -> M04 -> M05 -> M06 together, auto-skipping when FFmpeg/Ollama/Whisper are absent
+- Fix integration issues found; measure and document CPU timing
 
 ---
 
@@ -491,7 +664,13 @@ D:\video_scliser\
 │   │   ├── service.py
 │   │   └── cli.py
 │   └── ui/
-│       └── __init__.py
+│       ├── __init__.py
+│       ├── __main__.py
+│       ├── config.py
+│       ├── app.py
+│       ├── jobs.py
+│       ├── templates/     # base, index, progress, result, error
+│       └── static/style.css
 ├── tests/
 │   ├── __init__.py
 │   ├── test_transcription_models.py
@@ -506,7 +685,8 @@ D:\video_scliser\
 │   ├── test_video_service.py
 │   ├── test_video_integration.py
 │   ├── test_clipping_selection.py
-│   └── test_clipping_service.py
+│   ├── test_clipping_service.py
+│   └── test_ui.py
 ├── input/
 ├── output/
 ├── docs/
@@ -517,7 +697,7 @@ D:\video_scliser\
 └── .gitignore
 ```
 
-**Git Commit:** `feat: add automatic AI clip generation pipeline`
+**Git Commit:** `feat: add local Flask web interface`
 
 ---
 

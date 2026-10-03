@@ -18,7 +18,7 @@ ai-video-clipper/
 │   ├── ai/               # LLM reasoning (Ollama + Qwen) ✅
 │   ├── video/            # Video processing engine (FFmpeg/FFprobe) ✅
 │   ├── clipping/         # Automatic clip selection & generation pipeline ✅
-│   └── ui/               # Local web UI (Flask)
+│   └── ui/               # Local web UI (Flask) ✅
 ├── tests/                # Unit & integration tests
 ├── input/                # Input videos
 ├── output/               # Generated clips
@@ -26,7 +26,7 @@ ai-video-clipper/
 └── requirements.txt
 ```
 
-## Current Milestone: **Milestone 05 - Automatic Clip Selection & Generation** ✅
+## Current Milestone: **Milestone 06 - Local Web UI** ✅
 
 - [x] Project structure created
 - [x] Python virtual environment
@@ -60,12 +60,13 @@ ai-video-clipper/
 - [x] All-or-nothing jobs: insufficient moments or any failed clip → clear error, no leftover clips
 - [x] 82 clipping tests (310 total) - fake M02/M03/M04, no Ollama/Whisper/FFmpeg needed
 - [x] Real end-to-end run verified (faster-whisper small + qwen2.5:0.5b + FFmpeg)
+- [x] Local Flask web UI on 127.0.0.1: upload, real stage progress, results, safe downloads
+- [x] 85 UI tests (395 total) - Flask test client, M05 mocked
 
 ## Future Milestones
 
 | Milestone | Focus |
 |-----------|-------|
-| **06** | Local web UI (Flask) |
 | **07** | End-to-end integration & testing |
 
 ## Development Setup
@@ -100,6 +101,49 @@ mypy app/
 | **Python 3.10+** | Runtime | https://python.org |
 
 > **Note:** FFmpeg and Ollama are NOT installed by this project. You must install them separately.
+
+## Local Web UI (M06)
+
+A browser front end for the M05 pipeline. It runs only on your machine.
+
+```bash
+python -m app.ui
+# Local AI Video Clipper: http://127.0.0.1:5000/
+```
+
+Open **http://127.0.0.1:5000/**, choose a video, set the number of clips, the duration per clip and an optional focus
+(default: "interesting moments"), then press **Generate Clips**.
+
+Example workflow: `meeting.mp4`, 2 clips, 10 s, "funny moments" → the processing page shows the real M05 stage
+(checking → transcribing → AI analysis → selecting → cutting → verifying) and refreshes every 3 s → the result page
+lists each clip's duration, start → end timecode, AI score and reason, with a **Download** button per clip.
+
+| | |
+|---|---|
+| Formats | MP4, MKV, MOV, AVI, WebM (checked by extension **and** by FFprobe; the browser MIME type is ignored) |
+| Upload limit | 2048 MB (`CLIPPER_MAX_UPLOAD_MB`). Uploads stream to disk, never into RAM. |
+| Clip count / duration / focus | the M05 limits: 1-20 clips, 1-600 s, focus ≤ 500 chars |
+| Concurrency | one job at a time (the CPU pipeline is sequential); a second submit is told to wait |
+| CPU time | about 35-45 s for a 40-70 s video on a laptop CPU; longer videos take minutes |
+
+**Output.** Clips are written to `output/ui_jobs/<job-id>/clip_001.mp4 ...` and kept until you delete them.
+The uploaded source is copied to `input/ui_uploads/<job-id>/` and **deleted when the job ends** (success or failure).
+A failed job leaves no output folder. Upload folders left over after a crash are removed on the next start.
+Job status lives in memory: after a restart the result pages are gone, but the clip files stay on disk.
+
+**Configuration** (environment variables, safe defaults):
+
+| Variable | Default |
+|---|---|
+| `CLIPPER_HOST` | `127.0.0.1` (localhost only) |
+| `CLIPPER_PORT` | `5000` |
+| `CLIPPER_UPLOAD_DIR` | `input/ui_uploads` |
+| `CLIPPER_OUTPUT_DIR` | `output/ui_jobs` |
+| `CLIPPER_MAX_UPLOAD_MB` | `2048` |
+| `CLIPPER_DEBUG` | off (`1`/`true` enables Flask debug; never use it on a non-local host) |
+
+The server never binds to `0.0.0.0` by default. To reach it from another device on purpose, set
+`CLIPPER_HOST=0.0.0.0`. There is no authentication or HTTPS, so only do this on a network you trust; the app logs a warning.
 
 ## Automatic Clip Generation (M05)
 
