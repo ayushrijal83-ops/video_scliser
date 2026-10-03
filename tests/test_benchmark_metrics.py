@@ -126,3 +126,19 @@ def test_evidence_in_range() -> None:
     assert evidence_in_range(c(0, 10, reason="quote: the quick brown fox jumps"), segs) is True
     assert evidence_in_range(c(10, 20, reason="quote: the quick brown fox jumps"), segs) is False
     assert evidence_in_range(c(0, 10, reason="something unrelated"), segs) is None
+
+
+def test_budget_truncates_and_clip_counts_use_real_selection() -> None:
+    """M09: the budget is applied like production (prompt + parse truncation); n=1/3/5 use M05 select_moments."""
+    data = load_dataset()
+    quotes = [s["text"] for s in data["segments"] if s["label"] in ("joke", "educational")]
+    reply = {"candidates": [{"quote": q, "reason": "r", "score": 0.9 - i / 100} for i, q in enumerate(quotes)]}
+    base = {"model": "m", "variant": "m08", "task": "funny", "seconds": 1.0, "response": json.dumps(reply)}
+    full = score_response({**base, "budget": 20}, data)
+    assert (full["returned"], full["valid"]) == (4, 4)
+    assert (full["ok_1"], full["ok_3"], full["ok_5"]) == (True, True, False)
+    assert full["hits_1"] == 0 and full["hits_3"] == 1  # order: educational, joke, educational, joke
+    capped = score_response({**base, "budget": 2}, data)
+    assert (capped["returned"], capped["valid"], capped["ok_3"], capped["budget"]) == (2, 2, False, 2)
+    legacy = score_response(base, data)  # M07/M08 records have no budget: they used 20
+    assert legacy["budget"] == 20

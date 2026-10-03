@@ -27,7 +27,109 @@ Build a completely free, local AI-powered automatic video clipper that:
 
 ---
 
-## Current Milestone: **Milestone 08 - AI Selection Quality & Timestamp Grounding**
+## Current Milestone: **Milestone 09 - AI Efficiency & Candidate Budget**
+
+**Status: COMPLETED - negative result, production behaviour unchanged**
+
+### Objective
+
+Decide whether the number of candidates requested from Qwen should scale with the requested clip count, to cut
+qwen2.5:3b inference time (71-481 s per job in M08) without losing selection quality, grounding reliability, or
+the ability to deliver the requested number of clips.
+
+### Baseline (M08, commit 7ac83ce)
+
+- `AIReasoningConfig.max_candidates` is fixed at **20** (`AI_MAX_CANDIDATES`), whatever the clip count.
+  It appears twice in the prompt ("Maximum candidates: 20", "Identify up to 20 …") and truncates the parsed reply.
+- M05 never passes the clip count to M03.
+- Worst-case AI time is bounded only by the 3072-token output cap (`AI_MAX_OUTPUT_TOKENS`) and the 600 s timeout.
+
+### Experiment design
+
+- **Where:** the existing M07/M08 harness (`benchmarks/ai/run_benchmark.py`), extended with
+  `--budgets N [N ...]` and per-clip-count metrics:
+  - `ok_1`, `ok_3`, `ok_5`: can the real M05 `select_moments` cut that many distinct 10 s clips from the grounded
+    candidates?
+  - `hits_1`, `hits_3`, `hits_5`: how many of those final clips land on the task's target label?
+- **Conditions:** qwen2.5:3b with the M08 production prompt and the live M03 grounding. Temperature 0.1,
+  output cap 3072, the same dataset and 4 tasks, 3 runs per cell. That's 72 calls.
+- **Why one reply serves all clip counts:** the model sees only the budget, not the clip count, so each budget was
+  run once per task and run and evaluated for 1, 3 and 5 clips.
+- **Budgets:** 3, 5, 8, 10, 15 and 20, which covers the required grid.
+- **Real-transcript check:** the saved real Whisper transcript of the E2E video was replayed through M03 + M05 with
+  "funny moments" and 3 clips, 4 runs at each of budgets 8, 10, 15 and 20.
+- **Real E2E check:** 3 real runs with a budget-8 implementation, compared with the same M08 runs.
+
+### Measured results (full tables in `docs/M07_AI_BENCHMARK.md` → "M09")
+
+| budget | synthetic mean / max AI s | synthetic top-1 | 3 clips ok | 5 clips ok | real transcript: top clip a joke | real mean AI s |
+|---|---|---|---|---|---|---|
+| 3 | 24 / 38 | 7/12 | 10/12 | 0/12 | - | - |
+| 5 | 39 / 47 | 7/12 | 11/12 | 10/12 | - | - |
+| 8 | 49 / 83 | 9/12 | 12/12 | 8/12 | **0/4** | 56 |
+| 10 | 61 / 90 | 9/12 | 12/12 | 10/12 | 1/4 | 71 |
+| 15 | 63 / 125 | 8/12 | 12/12 | 7/12 | **0/4** | 103 |
+| **20 (M08)** | 57 / 180 | 10/12 | 8/12 | 8/12 | **4/4** | **60** |
+
+- **3b fills the budget only on list-like requests** ("decision": ~8-9 s per candidate written, up to 180 s at 20).
+  On funny and Q&A it writes 4-7 candidates at any budget ≥ 8.
+- **Grounding rejected 0 quotes** in every synthetic cell, so it did not limit clip availability.
+- **Budget-8 real E2E:** AI 81 / 58 / 44 s vs M08's 168 / 71 / 481 s; all 3 succeeded with exact 10.000 s clips.
+  But each funny run kept only one of the two jokes, where M08 kept both.
+
+### Decision
+
+**Production behaviour is left unchanged** (fixed budget 20), as the milestone requires when the data does not
+support a safe change. The candidate budget changes *what* qwen2.5:3b selects, not only how much it writes, and it
+does so non-monotonically:
+- On the real transcript, budget 20 was both the fastest (60 s) and the only budget that ranked a joke first (4/4).
+- Budgets 8 and 15 never did (0/4).
+- A lower budget does help list-like requests (481 s → 44 s on the real decision run), but it degraded the most
+  common request type and saved no time there.
+
+The synthetic 3-run benchmark alone would have suggested a floor-8 formula. The real-transcript check overturned
+that, and is now part of the record.
+
+A floor-8 / 2× formula was implemented and tested (16 unit tests, 3 real E2E runs), then **reverted**. `app/` is
+byte-identical to M08. What was kept is measurement infrastructure only.
+
+### Implementation (kept)
+
+- `benchmarks/ai/run_benchmark.py`:
+  - `--budgets` option; each record stores its budget (old M07/M08 results default to 20 and rescore identically).
+  - The parse truncation uses the record's budget, as production does.
+  - `clip_count_stats` (`ok_N`, `hits_N` for N = 1, 3, 5 via the real `select_moments`).
+  - `summarize_budgets` table; `--summarize` prints it when saved results contain several budgets.
+- `tests/test_benchmark_metrics.py`: +1 test (budget truncation, the real-selection clip-count stats, old records default to 20).
+
+### Tests and quality gates
+
+- Pytest: **488 collected - 487 passed, 1 opt-in skipped** (M02-M08 suites unchanged and green).
+- Ruff clean repo-wide. `mypy app benchmarks` clean.
+- Regression benchmark (the M07/M08 default run, both models, 48 calls): 3b m08 top-1 **9/12** (M08: 9/12),
+  3b v1 8/12 (M08: 9/12, one run), 0.5b 0/12 for both. The harness and baseline are reproducible.
+- Real 3b E2E after the revert (production = M08): success; the two jokes are clips 1-2; AI 58 s, total 98 s;
+  3 × 10.000000 s, h264 + aac; each cut contains its grounded quote; no leftovers.
+- Browser test: not required, because production code is unchanged from the browser-verified M08.
+
+### Security
+
+No production code changed. The benchmark additions only read local files and talk to the local Ollama, with no new
+dependencies, network endpoints or subprocesses. The quote stays untrusted text, and grounding remains authoritative.
+
+### Known limitations
+
+1. qwen2.5:3b AI time still dominates (60-480 s per job on this CPU). List-like requests can fill 20 candidates.
+2. Selection quality is sensitive to small prompt changes, including the budget number. Any future prompt change
+   needs the real-transcript check, not only the synthetic benchmark.
+3. The real-transcript check covers one video and one instruction, with 4 runs per budget. That's strong enough to
+   reject a change (0/4 vs 4/4), not to prove the opposite.
+4. All M08 limitations remain.
+
+---
+
+## Milestone 08 - AI Selection Quality & Timestamp Grounding
+
 
 **Status: COMPLETED**
 
@@ -994,15 +1096,13 @@ It also checked that a clip past the source end is rejected with no output writt
 
 ---
 
-## Next Milestone: **Milestone 09 - AI Inference Performance: Candidate Budget** (recommended)
+## Next Milestone: **Milestone 10 - to be defined by the project architect**
 
-M08 made clip *locations* reliable. AI reasoning is now the measured bottleneck: 71-481 s per job with qwen2.5:3b,
-against ~40 s transcription and < 2 s FFmpeg. Recommended scope, to be confirmed by the project architect:
-- Ask the model for a candidate budget derived from the requested clip count (for example 2-3× `clip_count`,
-  bounded), instead of a fixed 20. Today the prompt always allows 20 candidates, and 3b sometimes writes nearly every line.
-- Re-measure AI time, top-1 accuracy and insufficient-candidate failures with `benchmarks/ai/run_benchmark.py`
-  and the real E2E harness. Keep the M08 grounding and the M07/M08 baselines for comparison.
-- Out of scope: captions, reframing and the other future features listed in M07/M08.
+M09 showed that cutting AI time by asking for fewer candidates degrades qwen2.5:3b selection, so AI inference
+time (60-480 s per job on this CPU) remains open. Options worth considering, none started:
+- Accept the current speed (quality and location reliability are now measured and acceptable for V1).
+- Revisit only with a different model or runtime, re-measured with `--budgets` and the real-transcript check.
+- Move to the V1 feature backlog (captions, 9:16 reframing, ...), which M07-M09 kept out of scope.
 
 ---
 
@@ -1094,7 +1194,7 @@ D:\video_scliser\
 └── .gitignore
 ```
 
-**Git Commit:** `feat: improve ai selection with timestamp grounding`
+**Git Commit:** `test: benchmark ai candidate budgets (no production change)`
 
 ---
 

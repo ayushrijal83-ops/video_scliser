@@ -6,7 +6,8 @@ Every number below can be re-derived from those files with
 `python -m benchmarks.ai.run_benchmark --summarize output/benchmarks/<file>.json`.
 
 > **M08 update:** the default model is now `qwen2.5:3b`, and clip locations come from Python quote grounding.
-> See "M08 update - timestamp grounding" at the end of this document.
+> See "M08 update - timestamp grounding" at the end of this document. M09 (candidate budgets, no production
+> change) follows it.
 
 ## TL;DR
 
@@ -300,3 +301,74 @@ selection, not location. Under the earlier quote-first prompts it looped until t
 | browser UI, funny 2 × 10 s | success; intern joke + office announcement | 2 × 10.000000 s | 72 s | 106 s |
 
 Grounding itself costs 26 ms plus ~6 ms per quote, even for a 2-hour transcript. AI inference is the bottleneck.
+
+
+---
+
+# M09 - candidate budget experiment (2026-10-03)
+
+**Question:** should the number of candidates requested from the model scale with the number of clips the user asks
+for, instead of the fixed 20 (`AI_MAX_CANDIDATES`)?
+
+**Answer: no, not with this model. Production behaviour was left unchanged.**
+
+**Design:**
+- Model: qwen2.5:3b with the M08 production prompt and M03 grounding. Temperature 0.1, 3072-token output cap, the same
+  dataset and 4 tasks, 3 runs per cell.
+- The model only sees the budget ("Maximum candidates: N"), so each budget was run once per task and run. The real M05
+  `select_moments` (10 s windows) then decided whether 1, 3 and 5 clips could be cut from that same reply.
+- Budgets tested: 3, 5, 8, 10, 15 and 20. This covers the requested grid (1 clip: 3/5/10/20; 3 clips: 5/10/15/20;
+  5 clips: 8/10/15/20).
+- Command: `python -m benchmarks.ai.run_benchmark --models qwen2.5:3b --variants m08 --budgets 3 5 8 10 15 20 --runs 3`
+
+## Synthetic benchmark (12 runs per budget)
+
+| budget | parse ok | mean s | max s | returned | grounded | rejected | selectable 10 s clips | 1 clip ok | 3 clips ok | 5 clips ok | top-1 | precision | irrelevant | target clips in final 1 / 3 / 5 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 3 | 12/12 | 24.4 | 37.9 | 3.0 | 3.0 | 0 | 2.8 | 12/12 | 10/12 | 0/12 | 7/12 | 0.31 | 0.39 | 0.58 / 1.10 / - |
+| 5 | 11/12 | 38.6 | 47.2 | 4.6 | 4.6 | 0 | 4.9 | 11/12 | 11/12 | 10/12 | 7/12 | 0.22 | 0.51 | 0.64 / 1.09 / 1.20 |
+| 8 | 12/12 | 48.8 | 83.2 | 5.8 | 5.8 | 0 | 5.7 | 12/12 | 12/12 | 8/12 | 9/12 | 0.19 | 0.46 | 0.75 / 1.00 / 1.00 |
+| 10 | 12/12 | 61.1 | 90.0 | 7.0 | 7.0 | 0 | 6.4 | 12/12 | 12/12 | 10/12 | 9/12 | 0.18 | 0.53 | 0.75 / 0.92 / 1.10 |
+| 15 | 12/12 | 62.8 | 124.8 | 7.0 | 7.0 | 0 | 6.6 | 12/12 | 12/12 | 7/12 | 8/12 | 0.18 | 0.54 | 0.67 / 0.83 / 0.71 |
+| 20 (M08) | 12/12 | 57.4 | 179.7 | 6.6 | 6.6 | 0 | 5.8 | 12/12 | 8/12 | 8/12 | 10/12 | 0.34 | 0.37 | 0.83 / 1.12 / 1.38 |
+
+Per task:
+- **3b fills the budget only on the list-like "decision" task.** It returned 3 / 5 / 8 / 10 / 14 / 20 candidates,
+  and AI time grew about 8-9 s per candidate (22 s at budget 3, 180 s at budget 20).
+- **On funny and Q&A it returns 4-7 candidates at any budget ≥ 8.** At budget 20, Q&A returned only 2, so 3 clips
+  failed in 3/3 runs: a bigger budget does not guarantee more usable moments.
+- Grounding rejected 0 quotes in every cell, so grounding was not a factor in clip availability here.
+
+From this table alone, a floor-8 budget (`max(8, 2 × clips)`, capped at 20) looked safe: top-1 9/12 vs 10/12, more
+satisfiable requests, and a lower worst case.
+
+## Real Whisper transcript (the deciding check)
+
+The same proposal was then replayed on the real 40-segment Whisper transcript of the E2E test video: "funny
+moments", 3 × 10 s clips, 4 runs per budget, final M05 selection labelled against the dataset (evaluation only).
+
+| budget | mean AI | max AI | candidates written | top clip is a joke | jokes in final 3 clips |
+|---|---|---|---|---|---|
+| 8 | 56 s | 58 s | 8 | **0/4** | 2, 1, 1, 1 |
+| 10 | 71 s | 72 s | 8-10 | 1/4 | 2, 2, 2, 1 |
+| 15 | 103 s | 120 s | 14 | **0/4** | 1, 1, 1, 1 |
+| **20 (M08 production)** | **60 s** | 78 s | 7-8 | **4/4** | **2, 2, 2, 2** |
+
+Real end-to-end runs with the budget-8 implementation, compared with the same M08 runs:
+- funny AI 81 s / 58 s (M08: 168 s / 71 s)
+- decision **44 s** (M08: **481 s**)
+- all 3 runs succeeded with exact 10.000 s clips
+- but only one joke made the final 3 clips in each funny run, where M08 got both jokes
+
+## Conclusion
+
+- **The budget changes what 3b selects, not just how much it writes, and not monotonically.** At budget 15 it wrote
+  14 candidates (slowest) and ranked an explanation first. At budget 20 it wrote 7-8 (fastest) and ranked the jokes
+  first in 4/4 runs.
+- **A lower budget does cut time on list-like requests** (481 s → 44 s on the real decision run). On the most
+  common request type, though, it saved nothing and degraded the clips.
+- **The synthetic benchmark's 3-run cells did not reveal this.** The real transcript did.
+- **Decision:** production stays at the fixed M08 budget of 20. The 3072-token output cap (M08) remains the bound on
+  worst-case AI time.
+- **Kept:** the `--budgets` benchmark option and the per-clip-count metrics (`ok_N`, `hits_N`), so the question can be
+  re-measured with a different model or prompt.

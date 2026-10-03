@@ -329,9 +329,10 @@ def run_once(
     task: dict[str, Any],
     data: dict[str, Any],
     options: dict[str, Any],
+    budget: int = 20,
 ) -> dict[str, Any]:
     transcript = to_transcript(data)
-    prompt = build_full_prompt(variant, transcript, task["instruction"], 20)
+    prompt = build_full_prompt(variant, transcript, task["instruction"], budget)
     started = time.perf_counter()
     try:
         response = client.generate(prompt, model=model, options=options, format="json" if JSON_MODE[variant] else "")
@@ -339,16 +340,18 @@ def run_once(
         response = f"<inference error: {e}>"
     seconds = time.perf_counter() - started
     record: dict[str, Any] = {"model": model, "variant": variant, "task": task["id"], "seconds": seconds,
-                              "response": response}
+                              "response": response, "budget": budget}
     return score_response(record, data)
 
 
 def score_response(record: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
     """(Re)compute all metrics from the raw model response, so saved results can be rescored."""
-    record = {k: record[k] for k in ("model", "variant", "task", "seconds", "response")}
+    record = {k: record[k] for k in ("model", "variant", "task", "seconds", "response")} | {
+        "budget": record.get("budget", 20)  # M07/M08 results predate budgets: they all used 20
+    }
     target = next(t["target"] for t in data["tasks"] if t["id"] == record["task"])
     try:
-        raw = prompts.parse_ai_response(record["response"], 20)
+        raw = prompts.parse_ai_response(record["response"], record["budget"])  # production truncates the same way
     except (ValueError, TypeError) as e:
         record.update(parse_error=str(e)[:200], returned=0, valid=0)
         return record
@@ -359,7 +362,26 @@ def score_response(record: dict[str, Any], data: dict[str, Any]) -> dict[str, An
         valid, rejected = legacy_validate(raw, data["duration"]), []
     record.update(score_run(raw, valid, data, target))
     record.update(grounding_stats(raw, valid, rejected))
+    record.update(clip_count_stats(valid, data, target))
     return record
+
+
+CLIP_COUNTS = (1, 3, 5)  # requested clip counts evaluated for every response (M09)
+
+
+def clip_count_stats(valid: list[ClipCandidate], data: dict[str, Any], target: str) -> dict[str, Any]:
+    """For each requested clip count n: can the real M05 selector cut n distinct 10 s clips, and how many
+    of those final clips land on the task's target label (the clips the user would actually get)?"""
+    out: dict[str, Any] = {}
+    for n in CLIP_COUNTS:
+        try:
+            moments = select_moments(valid, n, M05_CLIP_SECONDS, data["duration"])
+        except InsufficientCandidatesError:
+            out[f"ok_{n}"], out[f"hits_{n}"] = False, None
+            continue
+        out[f"ok_{n}"] = True
+        out[f"hits_{n}"] = sum(label_of(m.candidate, data["segments"]) == target for m in moments)
+    return out
 
 
 def legacy_validate(raw: list[dict[str, Any]], duration: float) -> list[ClipCandidate]:
@@ -443,6 +465,34 @@ def summarize(records: list[dict[str, Any]]) -> str:
     return "\n".join(rows)
 
 
+def summarize_budgets(records: list[dict[str, Any]]) -> str:
+    """M09: one row per (model, candidate budget), aggregated over all tasks and runs."""
+    rows = [
+        (
+            "| model | budget | runs | parse ok | mean s | max s | returned | grounded | rejected (not found / "
+            "ambiguous / short) | selectable 10 s clips | n=1 ok | n=3 ok | n=5 ok | top-1 | precision | irrelevant "
+            "| target clips in n=1 / 3 / 5 |"
+        ),
+        "|" + "---|" * 17,
+    ]
+    key = lambda r: (r["model"], r.get("budget", 20))
+    for (model, budget), group in itertools.groupby(sorted(records, key=key), key=key):
+        runs = list(group)
+        ok = [r for r in runs if "parse_error" not in r]
+        hits = " / ".join(_fmt(_mean([r[f"hits_{n}"] for r in ok if r.get(f"ok_{n}")]), 2) for n in CLIP_COUNTS)
+        rows.append(
+            f"| {model} | {budget} | {len(runs)} | {len(ok)}/{len(runs)} | {_fmt(_mean([r['seconds'] for r in runs]), 1)} "
+            f"| {max(r['seconds'] for r in runs):.1f} | {_fmt(_mean([r['returned'] for r in runs]), 1)} "
+            f"| {_fmt(_mean([r['valid'] for r in runs]), 1)} "
+            f"| {_sum(ok, 'rejected')} ({_sum(ok, 'not_found')} / {_sum(ok, 'ambiguous')} / {_sum(ok, 'too_short')}) "
+            f"| {_fmt(_mean([r['m05_distinct_10s'] for r in ok]), 1)} "
+            + "".join(f"| {sum(bool(r.get(f'ok_{n}')) for r in runs)}/{len(runs)} " for n in CLIP_COUNTS)
+            + f"| {sum(r['top1_hit'] for r in ok)}/{len(runs)} | {_fmt(_mean([r['precision'] for r in ok]))} "
+            f"| {_fmt(_mean([r['irrelevant_rate'] for r in ok]))} | {hits} |"
+        )
+    return "\n".join(rows)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--models", nargs="+", default=["qwen2.5:0.5b", "qwen2.5:3b"])
@@ -452,6 +502,8 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=0.1, help="M03 default is 0.1")
     parser.add_argument("--seed", type=int, help="fixed Ollama seed (default: none, like M03)")
     parser.add_argument("--label", default="run", help="name for the raw results file")
+    parser.add_argument("--budgets", nargs="+", type=int, metavar="N",
+                        help="M09: candidate budgets to request (default: 20, the M08 production value)")
     parser.add_argument("--summarize", nargs="+", type=Path, metavar="RESULTS_JSON",
                         help="rescore saved result files instead of running models")
     args = parser.parse_args()
@@ -459,7 +511,10 @@ def main() -> None:
     data = load_dataset()
     if args.summarize:
         saved = [r for f in args.summarize for r in json.loads(f.read_text(encoding="utf-8"))["records"]]
-        print(summarize([score_response(r, data) for r in saved]))
+        scored = [score_response(r, data) for r in saved]
+        print(summarize(scored))
+        if len({r["budget"] for r in scored}) > 1:
+            print("\n" + summarize_budgets(scored))
         return
     tasks = [t for t in data["tasks"] if not args.tasks or t["id"] in args.tasks]
     # Same generation options as M03 (num_predict cap since M08).
@@ -468,17 +523,20 @@ def main() -> None:
         options["seed"] = args.seed
     client = OllamaClient(OllamaConfig.from_env())
     records = []
-    for model, variant, task in itertools.product(args.models, args.variants, tasks):
+    budgets = args.budgets or [20]
+    for model, variant, budget, task in itertools.product(args.models, args.variants, budgets, tasks):
         for i in range(args.runs):
-            record = run_once(client, model, variant, task, data, options)
+            record = run_once(client, model, variant, task, data, options, budget)
             records.append(record)
-            print(f"{model} {variant} {task['id']} run {i + 1}: {record['seconds']:.1f}s "
+            print(f"{model} {variant} budget={budget} {task['id']} run {i + 1}: {record['seconds']:.1f}s "
                   f"valid={record.get('valid')} labels={record.get('labels', record.get('parse_error'))}", flush=True)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUT_DIR / f"{args.label}_{time.strftime('%Y%m%d-%H%M%S')}.json"
     out.write_text(json.dumps({"options": options, "records": records}, indent=2), encoding="utf-8")
     print(f"\nRaw results: {out}\n\n{summarize(records)}")
+    if args.budgets:
+        print("\n" + summarize_budgets(records))
 
 
 if __name__ == "__main__":
