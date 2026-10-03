@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+
 from app.ai.models import ClipCandidate
 from app.ai.prompts import SYSTEM_PROMPT
 from benchmarks.ai.run_benchmark import (
     JSON_MODE,
+    PROMPT_M07,
     PROMPT_V2,
     PROMPTS,
     build_full_prompt,
@@ -11,9 +14,11 @@ from benchmarks.ai.run_benchmark import (
     evidence_in_range,
     jaccard,
     label_of,
+    legacy_validate,
     load_dataset,
     m05_distinct,
     mean_pairwise,
+    score_response,
     score_run,
     to_transcript,
 )
@@ -76,12 +81,36 @@ def test_dataset_labels_never_reach_the_model() -> None:
     prompt = build_full_prompt("v2", to_transcript(data), "funny moments", 20)
     assert '"label"' not in prompt and "target" not in prompt
     assert data["segments"][4]["text"] in prompt
-    assert set(PROMPTS) == set(JSON_MODE) == {"v1", "v2", "v2-free", "v2-bracket"}
+    assert set(PROMPTS) == set(JSON_MODE) == {"v1", "m08", "m08-sentence", "m08-rules", "m08-first", "v2", "v2-free", "v2-bracket"}
     assert 'start=23.0 end=34.0 text="So, quick' in prompt
-    production = build_full_prompt("v1", to_transcript(data), "funny moments", 20)
-    assert production.startswith(SYSTEM_PROMPT.format(max_candidates=20))  # v1 is the live M03 prompt
+    production = build_full_prompt("m08", to_transcript(data), "funny moments", 20)
+    assert production.startswith(SYSTEM_PROMPT.format(max_candidates=20))  # m08 is the live M03 prompt
     assert "[23.0-34.0] So, quick" in production
+    m07 = build_full_prompt("v1", to_transcript(data), "funny moments", 20)
+    assert m07.startswith(PROMPT_M07.format(max_candidates=20)) and '"quote"' not in m07
     assert "[23.0-34.0] So, quick" in build_full_prompt("v2-bracket", to_transcript(data), "x", 20)
+
+
+def test_m08_scoring_uses_live_grounding_and_v1_uses_ai_times() -> None:
+    data = load_dataset()
+    reply = {"candidates": [
+        {"quote": "Why did the developer go broke?", "start": 132.0, "end": 141.0, "reason": "joke", "score": 0.9},
+        {"quote": "words never spoken in this meeting", "start": 34.0, "end": 44.0, "reason": "x", "score": 0.8},
+    ]}
+    base = {"model": "m", "task": "funny", "seconds": 1.0, "response": json.dumps(reply)}
+    m08 = score_response({**base, "variant": "m08"}, data)
+    assert m08["labels"] == ["joke"] and m08["top1_hit"] is True  # grounded at 94-103 s, not 132-141 s
+    assert (m08["quoted"], m08["not_found"], m08["rejected"]) == (2, 1, 1)
+    assert (m08["ai_time_wrong"], m08["ai_time_checked"]) == (1, 1)
+    v1 = score_response({**base, "variant": "v1"}, data)
+    assert v1["labels"] == ["admin", "joke"] and v1["top1_hit"] is False  # M07 behaviour: AI times trusted
+
+
+def test_legacy_validate_matches_m07_rules() -> None:
+    raw = [{"start": 1, "end": 2, "reason": "a", "score": 0.5}, {"start": 2, "end": 1, "reason": "b", "score": 0.9},
+           {"start": 1, "end": 200, "reason": "c", "score": 0.9}, {"start": 1, "end": 2, "reason": "", "score": 0.9},
+           {"start": "x", "end": 2, "reason": "d", "score": 0.9}, {"start": 3, "end": 4, "reason": "e", "score": 0.7}]
+    assert [c.reason for c in legacy_validate(raw, 150.0)] == ["e", "a"]
 
 
 def test_v2_experiment_prompt_is_general_purpose() -> None:

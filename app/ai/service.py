@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 
 from app.transcription.models import TranscriptionResult
@@ -15,6 +16,7 @@ from .exceptions import (
     OllamaModelUnavailableError,
     OllamaUnavailableError,
 )
+from .grounding import ground_quote, transcript_tokens
 from .models import ClipAnalysisResult, ClipCandidate
 from .prompts import build_prompt, parse_ai_response
 
@@ -23,6 +25,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_CANDIDATES = 20
 DEFAULT_MAX_TRANSCRIPT_CHARS = 8000
 DEFAULT_TEMPERATURE = 0.1
+# Ollama num_predict cap. qwen2.5:0.5b was seen repeating one candidate until the request timed out
+# (M08 benchmark); 20 quoted candidates need ~1,600 tokens. A capped reply that is cut off fails JSON
+# parsing and becomes a clean AIResponseParseError instead of a 10-minute hang.
+DEFAULT_MAX_OUTPUT_TOKENS = 3072
 
 
 @dataclass
@@ -33,6 +39,7 @@ class AIReasoningConfig:
     max_candidates: int = DEFAULT_MAX_CANDIDATES
     max_transcript_chars: int = DEFAULT_MAX_TRANSCRIPT_CHARS
     temperature: float = DEFAULT_TEMPERATURE
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
 
     def __post_init__(self) -> None:
         if self.max_candidates <= 0:
@@ -41,6 +48,8 @@ class AIReasoningConfig:
             raise InvalidConfigurationError("max_transcript_chars must be > 0")
         if not 0.0 <= self.temperature <= 2.0:
             raise InvalidConfigurationError("temperature must be in [0.0, 2.0]")
+        if self.max_output_tokens <= 0:
+            raise InvalidConfigurationError("max_output_tokens must be > 0")
 
     @classmethod
     def from_env(cls) -> AIReasoningConfig:
@@ -49,7 +58,19 @@ class AIReasoningConfig:
             max_candidates=int(__import__("os").getenv("AI_MAX_CANDIDATES", str(DEFAULT_MAX_CANDIDATES))),
             max_transcript_chars=int(__import__("os").getenv("AI_MAX_TRANSCRIPT_CHARS", str(DEFAULT_MAX_TRANSCRIPT_CHARS))),
             temperature=float(__import__("os").getenv("AI_TEMPERATURE", str(DEFAULT_TEMPERATURE))),
+            max_output_tokens=int(__import__("os").getenv("AI_MAX_OUTPUT_TOKENS", str(DEFAULT_MAX_OUTPUT_TOKENS))),
         )
+
+
+def _number(value: object) -> float | None:
+    """A finite float, or None. AI times are optional hints and never fail a candidate."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        f = float(value)
+    except ValueError:
+        return None
+    return f if math.isfinite(f) else None
 
 
 class AIReasoningService:
@@ -75,54 +96,60 @@ class AIReasoningService:
     def _validate_and_create_candidates(
         self,
         raw_candidates: list[dict],
-        transcript_duration: float,
-    ) -> list[ClipCandidate]:
-        validated = []
+        transcript: TranscriptionResult,
+    ) -> tuple[list[ClipCandidate], list[str]]:
+        """Validate AI output and ground every quote in the transcript.
+
+        Returns (grounded candidates, one "reason: quote" line per rejected candidate). The clip
+        location is the quote's transcript position; the model's own start/end are kept only as
+        ai_start/ai_end (and may break a tie between identical quotes, see ground_quote).
+        """
+        tokens = transcript_tokens(transcript)
+        validated: list[ClipCandidate] = []
+        rejected: list[str] = []
 
         for i, c in enumerate(raw_candidates):
+            quote = ""
             try:
-                start = float(c.get("start", -1))
-                end = float(c.get("end", -1))
                 reason = str(c.get("reason", "")).strip()
                 score = float(c.get("score", -1))
-
-                if start < 0 or end < 0:
-                    raise InvalidCandidateError(c, "timestamps must be >= 0")
-                if end <= start:
-                    raise InvalidCandidateError(c, f"end ({end}) must be > start ({start})")
-                if start > transcript_duration:
-                    raise InvalidCandidateError(c, f"start ({start}) exceeds transcript duration ({transcript_duration})")
-                if end > transcript_duration:
-                    raise InvalidCandidateError(c, f"end ({end}) exceeds transcript duration ({transcript_duration})")
+                quote = str(c.get("quote", "")).strip()
                 if not reason:
                     raise InvalidCandidateError(c, "reason cannot be empty")
                 if not (0.0 <= score <= 1.0):
                     raise InvalidCandidateError(c, f"score must be in [0.0, 1.0], got {score}")
+                if not quote:
+                    raise InvalidCandidateError(c, "no quote to locate the moment")
 
-                title = str(c.get("title", "")).strip()
-                transcript_text = str(c.get("transcript_text", "")).strip()
+                ai_start, ai_end = _number(c.get("start")), _number(c.get("end"))
+                grounding = ground_quote(quote, tokens, ai_start, ai_end)
+                if not grounding.ok:
+                    raise InvalidCandidateError(c, grounding.reason)
+                assert grounding.start is not None and grounding.end is not None
+
                 confidence = float(c.get("confidence", 1.0))
-                if not (0.0 <= confidence <= 1.0):
-                    confidence = 1.0
-
-                candidate = ClipCandidate(
-                    start=start,
-                    end=end,
-                    reason=reason,
-                    score=score,
-                    title=title,
-                    transcript_text=transcript_text,
-                    confidence=confidence,
+                validated.append(
+                    ClipCandidate(
+                        start=grounding.start,
+                        end=grounding.end,
+                        reason=reason,
+                        score=score,
+                        title=str(c.get("title", "")).strip(),
+                        transcript_text=grounding.text,
+                        confidence=confidence if 0.0 <= confidence <= 1.0 else 1.0,
+                        quote=quote,
+                        ai_start=ai_start,
+                        ai_end=ai_end,
+                    )
                 )
-                validated.append(candidate)
-
-            except (ValueError, TypeError, KeyError, InvalidCandidateError) as e:
-                logger.warning("Skipping invalid candidate %d: %s", i, e)
-                continue
+            except (ValueError, TypeError, KeyError, AttributeError, InvalidCandidateError) as e:
+                message = e.reason if isinstance(e, InvalidCandidateError) else str(e)
+                logger.warning("Skipping AI candidate %d: %s", i, message)
+                rejected.append(f"{message}: {quote[:80]!r}")
 
         # Sort by score descending, then by start ascending for deterministic ordering
         validated.sort(key=lambda x: (-x.score, x.start))
-        return validated
+        return validated, rejected
 
     def analyze(
         self,
@@ -164,7 +191,7 @@ class AIReasoningService:
             response_text = client.generate(
                 prompt=full_prompt,
                 model=model_name,
-                options={"temperature": self.config.temperature},
+                options={"temperature": self.config.temperature, "num_predict": self.config.max_output_tokens},
             )
         except (OllamaUnavailableError, OllamaModelUnavailableError, AIInferenceError):
             raise
@@ -187,15 +214,16 @@ class AIReasoningService:
             )
 
         # Validate and create candidates
-        candidates = self._validate_and_create_candidates(raw_candidates, transcript.duration)
+        candidates, rejected = self._validate_and_create_candidates(raw_candidates, transcript)
 
-        logger.info("AI analysis complete: %d valid candidates", len(candidates))
+        logger.info("AI analysis complete: %d grounded candidates, %d rejected", len(candidates), len(rejected))
 
         return ClipAnalysisResult(
             instruction=instruction,
             candidates=candidates,
             model_name=model_name,
             transcript_duration=transcript.duration,
+            rejected=rejected,
         )
 
 

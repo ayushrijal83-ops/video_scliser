@@ -1,7 +1,7 @@
-"""M07 local AI quality benchmark: same transcript, same tasks, several models / prompts / runs.
+"""Local AI quality benchmark (M07, extended in M08): same transcript and tasks, several models / prompts / runs.
 
 Usage (Ollama running, models pulled):
-    python -m benchmarks.ai.run_benchmark --models qwen2.5:0.5b qwen2.5:3b --runs 3
+    python -m benchmarks.ai.run_benchmark --models qwen2.5:0.5b qwen2.5:3b --runs 3     # v1 vs m08
     python -m benchmarks.ai.run_benchmark --tasks funny --runs 5 --temperature 0 --seed 42
 
 Raw results go to output/benchmarks/ (gitignored); a Markdown summary is printed to stdout.
@@ -21,8 +21,13 @@ from typing import Any
 
 from app.ai import prompts
 from app.ai.client import OllamaClient, OllamaConfig
+from app.ai.exceptions import AIError
 from app.ai.models import ClipCandidate
-from app.ai.service import AIReasoningConfig, AIReasoningService
+from app.ai.service import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    AIReasoningConfig,
+    AIReasoningService,
+)
 from app.clipping import InsufficientCandidatesError, iou, select_moments
 from app.clipping.models import ClipWindow
 from app.transcription.models import TranscriptionResult, TranscriptSegment
@@ -30,9 +35,35 @@ from app.transcription.models import TranscriptionResult, TranscriptSegment
 DATASET = Path(__file__).with_name("dataset.json")
 OUT_DIR = Path("output/benchmarks")
 
-# v1 is the production M03 prompt and transcript format. v2 is the M07 experiment (not adopted, see
-# docs/M07_AI_BENCHMARK.md): placeholders instead of example values, quoted evidence, a score spread,
-# segment-aligned times, and "start=.. end=.. text=.." transcript lines.
+# Variants:
+#   v1   the M07 production prompt (verbatim copy) with M07 validation: the model's times are the clip location.
+#   m08  the live production prompt (asks for a quote) with the live M03 validation: quotes grounded in Python.
+#   v2*  the M07 prompt experiment (not adopted, see docs/M07_AI_BENCHMARK.md), M07 validation.
+PROMPT_M07 = """You are an expert video content analyzer. Your task is to identify the most interesting, self-contained moments in a timestamped video transcript based on a user's instruction.
+
+RULES:
+1. Return ONLY valid JSON. No markdown, no extra text, no explanations.
+2. Identify self-contained moments that make sense as standalone clips.
+3. Use ONLY timestamps from the provided transcript. Do not invent timestamps.
+4. Each candidate must have: start (float), end (float), reason (string), score (float 0-1).
+5. Scores represent how well the moment matches the instruction (1.0 = perfect match).
+6. Sort candidates by score descending.
+7. Avoid overlapping candidates when possible.
+8. Respect the user's instruction precisely.
+9. Maximum candidates: {max_candidates}.
+
+JSON FORMAT:
+{{
+  "candidates": [
+    {{
+      "start": 72.5,
+      "end": 105.2,
+      "reason": "Clear standalone explanation with a strong hook about the topic.",
+      "score": 0.91
+    }}
+  ]
+}}"""
+
 PROMPT_V2 = """You are a video editor choosing short clips from a timestamped transcript.
 Judge the meaning of what is said, not individual keywords.
 
@@ -53,10 +84,109 @@ RULES:
 
 OUTPUT SCHEMA (types only; replace every placeholder with real values):
 {{"candidates": [{{"start": <number>, "end": <number>, "reason": "<quoted words and why they match>", "score": <number between 0 and 1>}}]}}"""
+# Earlier M08 prompt revisions, kept so their documented results stay reproducible (not used in production):
+# m08-sentence  quote example was a sentence; qwen2.5:3b copied it into every candidate on a real transcript.
+# m08-rules     angle-bracket placeholder plus reworded quote rule; grounding worked, but 3b top-1 fell to 3/12.
+PROMPT_M08_SENTENCE = """You are an expert video content analyzer. Your task is to identify the most interesting, self-contained moments in a timestamped video transcript based on a user's instruction.
+
+RULES:
+1. Return ONLY valid JSON. No markdown, no extra text, no explanations.
+2. Identify self-contained moments that make sense as standalone clips.
+3. For each moment, "quote" must be a short passage copied word for word from the transcript text (about 5 to 20 words).
+   Copy the exact words: do not paraphrase, do not invent text, do not shorten it with "...".
+   Choose words that appear only once in the transcript, so the quote identifies exactly this moment.
+   Choosing the right moment and quoting it exactly matters more than the timestamps.
+4. Each candidate must have: quote (string), start (float), end (float), reason (string), score (float 0-1).
+   start and end are your best estimate of where the quote is, using timestamps from the transcript.
+5. Scores represent how well the moment matches the instruction (1.0 = perfect match).
+6. Sort candidates by score descending.
+7. Avoid overlapping candidates when possible.
+8. Respect the user's instruction precisely.
+9. Maximum candidates: {max_candidates}.
+
+JSON FORMAT:
+{{
+  "candidates": [
+    {{
+      "quote": "the exact words copied from the transcript",
+      "start": 72.5,
+      "end": 105.2,
+      "reason": "Clear standalone explanation with a strong hook about the topic.",
+      "score": 0.91
+    }}
+  ]
+}}"""
+PROMPT_M08_PLACEHOLDER_RULES = """You are an expert video content analyzer. Your task is to identify the most interesting, self-contained moments in a timestamped video transcript based on a user's instruction.
+
+RULES:
+1. Return ONLY valid JSON. No markdown, no extra text, no explanations.
+2. Identify self-contained moments that make sense as standalone clips.
+3. For each moment, "quote" must be 5 to 20 consecutive words copied exactly from the TRANSCRIPT SEGMENTS
+   (the text after a [start-end] time; it may continue into the next line).
+   Copy the exact words: do not paraphrase, do not invent text, do not shorten it with "...".
+   Every candidate needs its own quote taken from its own moment. Never copy the example below.
+   Choose words that appear only once in the transcript, so the quote identifies exactly this moment.
+   Choosing the right moment and quoting it exactly matters more than the timestamps.
+4. Each candidate must have: quote (string), start (float), end (float), reason (string), score (float 0-1).
+   start and end are your best estimate of where the quote is, using timestamps from the transcript.
+5. Scores represent how well the moment matches the instruction (1.0 = perfect match).
+6. Sort candidates by score descending.
+7. Avoid overlapping candidates when possible.
+8. Respect the user's instruction precisely.
+9. Maximum candidates: {max_candidates}.
+
+JSON FORMAT:
+{{
+  "candidates": [
+    {{
+      "quote": "<5-20 words copied from one transcript line>",
+      "start": 72.5,
+      "end": 105.2,
+      "reason": "Clear standalone explanation with a strong hook about the topic.",
+      "score": 0.91
+    }}
+  ]
+}}"""
+
+# m08-first    quote first + placeholder (M07 rule wording otherwise); 3b top-1 also 3/12.
+PROMPT_M08_QUOTE_FIRST = """You are an expert video content analyzer. Your task is to identify the most interesting, self-contained moments in a timestamped video transcript based on a user's instruction.
+
+RULES:
+1. Return ONLY valid JSON. No markdown, no extra text, no explanations.
+2. Identify self-contained moments that make sense as standalone clips.
+3. For each moment, "quote" must be a short passage copied word for word from the transcript text (about 5 to 20 words).
+   Copy the exact words: do not paraphrase, do not invent text, do not shorten it with "...".
+   Choose words that appear only once in the transcript, so the quote identifies exactly this moment.
+   Choosing the right moment and quoting it exactly matters more than the timestamps.
+4. Each candidate must have: quote (string), start (float), end (float), reason (string), score (float 0-1).
+   start and end are your best estimate of where the quote is, using timestamps from the transcript.
+5. Scores represent how well the moment matches the instruction (1.0 = perfect match).
+6. Sort candidates by score descending.
+7. Avoid overlapping candidates when possible.
+8. Respect the user's instruction precisely.
+9. Maximum candidates: {max_candidates}.
+
+JSON FORMAT:
+{{
+  "candidates": [
+    {{
+      "quote": "<5-20 words copied from one transcript line>",
+      "start": 72.5,
+      "end": 105.2,
+      "reason": "Clear standalone explanation with a strong hook about the topic.",
+      "score": 0.91
+    }}
+  ]
+}}"""
+
 V1_EXAMPLE_REASON = "Clear standalone explanation with a strong hook about the topic."
-PROMPTS = {"v1": prompts.SYSTEM_PROMPT, "v2": PROMPT_V2, "v2-free": PROMPT_V2, "v2-bracket": PROMPT_V2}
+PROMPTS = {"v1": PROMPT_M07, "m08": prompts.SYSTEM_PROMPT, "m08-sentence": PROMPT_M08_SENTENCE,
+           "m08-rules": PROMPT_M08_PLACEHOLDER_RULES,
+           "m08-first": PROMPT_M08_QUOTE_FIRST, "v2": PROMPT_V2, "v2-free": PROMPT_V2, "v2-bracket": PROMPT_V2}
+GROUNDED = {"m08", "m08-sentence", "m08-rules", "m08-first"}
 # Ablations: v2-free = v2 without Ollama JSON mode; v2-bracket = v2 with the production transcript lines.
-JSON_MODE = {"v1": False, "v2": True, "v2-free": False, "v2-bracket": True}
+JSON_MODE = {"v1": False, "m08": False, "m08-sentence": False, "m08-rules": False, "m08-first": False, "v2": True, "v2-free": False,
+             "v2-bracket": True}
 KEYED_LINES = {"v2", "v2-free"}
 M05_CLIP_SECONDS = 10.0  # window length used to count how many distinct clips M05 could cut
 
@@ -132,11 +262,12 @@ def aligned(c: ClipCandidate, segments: list[dict[str, Any]], tol: float = 0.05)
 
 
 def evidence_in_range(c: ClipCandidate, segments: list[dict[str, Any]], min_words: int = 4) -> bool | None:
-    """Does the segment whose words the reason quotes overlap the candidate's own times?
+    """Does the segment whose words the candidate quotes overlap the candidate's own times?
 
-    None when the reason quotes no segment (fewer than min_words shared words with every segment).
+    Uses the quote field when present (M08), else the reason. None when nothing quotes a segment
+    (fewer than min_words shared words with every segment).
     """
-    words = _tokens(c.reason)
+    words = _tokens(c.quote or c.reason)
     shared = [len(words & _tokens(s["text"])) for s in segments]
     best = max(range(len(segments)), key=lambda i: shared[i] / max(len(_tokens(segments[i]["text"])), 1))
     if shared[best] < min_words:
@@ -202,7 +333,10 @@ def run_once(
     transcript = to_transcript(data)
     prompt = build_full_prompt(variant, transcript, task["instruction"], 20)
     started = time.perf_counter()
-    response = client.generate(prompt, model=model, options=options, format="json" if JSON_MODE[variant] else "")
+    try:
+        response = client.generate(prompt, model=model, options=options, format="json" if JSON_MODE[variant] else "")
+    except AIError as e:  # e.g. timeout: recorded as a failed run, the benchmark continues
+        response = f"<inference error: {e}>"
     seconds = time.perf_counter() - started
     record: dict[str, Any] = {"model": model, "variant": variant, "task": task["id"], "seconds": seconds,
                               "response": response}
@@ -218,10 +352,43 @@ def score_response(record: dict[str, Any], data: dict[str, Any]) -> dict[str, An
     except (ValueError, TypeError) as e:
         record.update(parse_error=str(e)[:200], returned=0, valid=0)
         return record
-    validator = AIReasoningService(AIReasoningConfig(OllamaConfig(model=record["model"])))
-    valid = validator._validate_and_create_candidates(raw, data["duration"])  # M03's real validation
+    if record["variant"] in GROUNDED:
+        validator = AIReasoningService(AIReasoningConfig(OllamaConfig(model=record["model"])))
+        valid, rejected = validator._validate_and_create_candidates(raw, to_transcript(data))  # live M03
+    else:
+        valid, rejected = legacy_validate(raw, data["duration"]), []
     record.update(score_run(raw, valid, data, target))
+    record.update(grounding_stats(raw, valid, rejected))
     return record
+
+
+def legacy_validate(raw: list[dict[str, Any]], duration: float) -> list[ClipCandidate]:
+    """M07 M03 validation, for the pre-grounding variants: the model's own times are the location."""
+    out = []
+    for c in raw:
+        try:
+            start, end, score = float(c.get("start", -1)), float(c.get("end", -1)), float(c.get("score", -1))
+            reason = str(c.get("reason", "")).strip()
+            if 0 <= start < end <= duration and reason and 0.0 <= score <= 1.0:
+                out.append(ClipCandidate(start=start, end=end, reason=reason, score=score))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return sorted(out, key=lambda x: (-x.score, x.start))
+
+
+def grounding_stats(raw: list[dict[str, Any]], valid: list[ClipCandidate], rejected: list[str]) -> dict[str, Any]:
+    """How quotes fared, and how often the model's own times disagreed with the grounded location."""
+    with_ai_time = [c for c in valid if c.ai_start is not None and c.ai_end is not None]
+    return {
+        "quoted": sum(bool(str(c.get("quote", "")).strip()) for c in raw if isinstance(c, dict)),
+        "not_found": sum(r.startswith("quote not found") for r in rejected),
+        "ambiguous": sum(r.startswith("ambiguous") for r in rejected),
+        "too_short": sum(r.startswith("quote too short") for r in rejected),
+        "rejected": len(rejected),
+        # Grounded candidates whose claimed times miss the quote's real position (what M08 corrects).
+        "ai_time_wrong": sum(not (c.ai_start < c.end and c.start < c.ai_end) for c in with_ai_time),  # type: ignore[operator]
+        "ai_time_checked": len(with_ai_time),
+    }
 
 
 def _mean(values: list[Any]) -> float | None:
@@ -231,6 +398,10 @@ def _mean(values: list[Any]) -> float | None:
 
 def _fmt(value: float | None, digits: int = 2) -> str:
     return "-" if value is None else f"{value:.{digits}f}"
+
+
+def _sum(records: list[dict[str, Any]], key: str) -> int:
+    return sum(r.get(key, 0) for r in records)
 
 
 def _evidence(records: list[dict[str, Any]]) -> str:
@@ -243,9 +414,10 @@ def summarize(records: list[dict[str, Any]]) -> str:
         (
             "| model | prompt | task | runs | parse ok | s/run | returned | valid | aligned | distinct scores "
             "| modal score share | near-dup pairs | unique reasons | top-1 hit | precision | recall | irrelevant "
-            "| M05 10 s clips | evidence in range | run-to-run Jaccard | identical outputs |"
+            "| M05 10 s clips | evidence in range | run-to-run Jaccard | identical outputs "
+            "| quoted | not found | ambiguous | too short | AI time wrong |"
         ),
-        "|" + "---|" * 21,
+        "|" + "---|" * 26,
     ]
     key = lambda r: (r["model"], r["variant"], r["task"])
     for (model, variant, task), group in itertools.groupby(sorted(records, key=key), key=key):
@@ -264,7 +436,9 @@ def summarize(records: list[dict[str, Any]]) -> str:
             f"| {sum(r['top1_hit'] for r in ok)}/{len(runs)} | {_fmt(_mean([r['precision'] for r in ok]))} "
             f"| {_fmt(_mean([r['recall'] for r in ok]))} | {_fmt(_mean([r['irrelevant_rate'] for r in ok]))} "
             f"| {_fmt(_mean([r['m05_distinct_10s'] for r in ok]), 1)} | {_evidence(ok)} "
-            f"| {_fmt(mean_pairwise([set(r['covered']) for r in ok]))} | {identical}/{len(runs)} |"
+            f"| {_fmt(mean_pairwise([set(r['covered']) for r in ok]))} | {identical}/{len(runs)} "
+            f"| {_sum(ok, 'quoted')} | {_sum(ok, 'not_found')} | {_sum(ok, 'ambiguous')} | {_sum(ok, 'too_short')} "
+            f"| {_sum(ok, 'ai_time_wrong')}/{_sum(ok, 'ai_time_checked')} |"
         )
     return "\n".join(rows)
 
@@ -272,7 +446,7 @@ def summarize(records: list[dict[str, Any]]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--models", nargs="+", default=["qwen2.5:0.5b", "qwen2.5:3b"])
-    parser.add_argument("--variants", nargs="+", default=["v1", "v2", "v2-free"], choices=sorted(PROMPTS))
+    parser.add_argument("--variants", nargs="+", default=["v1", "m08"], choices=sorted(PROMPTS))
     parser.add_argument("--tasks", nargs="+", help="task ids from dataset.json (default: all)")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--temperature", type=float, default=0.1, help="M03 default is 0.1")
@@ -288,7 +462,8 @@ def main() -> None:
         print(summarize([score_response(r, data) for r in saved]))
         return
     tasks = [t for t in data["tasks"] if not args.tasks or t["id"] in args.tasks]
-    options: dict[str, Any] = {"temperature": args.temperature}
+    # Same generation options as M03 (num_predict cap since M08).
+    options: dict[str, Any] = {"temperature": args.temperature, "num_predict": DEFAULT_MAX_OUTPUT_TOKENS}
     if args.seed is not None:
         options["seed"] = args.seed
     client = OllamaClient(OllamaConfig.from_env())

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
 from app.transcription import TranscriptionResult, TranscriptionService
 
-from .client import OllamaConfig
+from .client import DEFAULT_MODEL, OllamaConfig
 from .exceptions import AIError
 from .service import AIReasoningConfig, AIReasoningService
 
@@ -45,8 +46,8 @@ Examples:
     )
     parser.add_argument(
         "--model",
-        default="qwen2.5:0.5b",
-        help="Ollama model name (default: qwen2.5:0.5b)",
+        default=os.getenv("OLLAMA_MODEL", DEFAULT_MODEL),
+        help=f"Ollama model name (default: $OLLAMA_MODEL or {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--host",

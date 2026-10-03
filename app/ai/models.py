@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class ClipCandidate:
-    """A candidate clip moment identified by the AI."""
+    """A candidate moment: the AI chose it (reason, score, quote); start/end are grounded transcript times.
+
+    ai_start/ai_end are the times the model claimed. They are kept for diagnostics and are never
+    used as the clip location (see app.ai.grounding).
+    """
 
     start: float
     end: float
@@ -15,6 +19,9 @@ class ClipCandidate:
     title: str = ""
     transcript_text: str = ""
     confidence: float = 1.0
+    quote: str = ""
+    ai_start: float | None = None
+    ai_end: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.start, (int, float)) or self.start < 0:
@@ -43,6 +50,9 @@ class ClipCandidate:
             "title": self.title,
             "transcript_text": self.transcript_text,
             "confidence": self.confidence,
+            "quote": self.quote,
+            "ai_start": self.ai_start,
+            "ai_end": self.ai_end,
         }
 
     @classmethod
@@ -55,6 +65,9 @@ class ClipCandidate:
             title=data.get("title", ""),
             transcript_text=data.get("transcript_text", ""),
             confidence=float(data.get("confidence", 1.0)),
+            quote=data.get("quote", ""),
+            ai_start=data.get("ai_start"),
+            ai_end=data.get("ai_end"),
         )
 
 
@@ -66,6 +79,8 @@ class ClipAnalysisResult:
     candidates: list[ClipCandidate]
     model_name: str
     transcript_duration: float
+    # One "reason: quote" line per AI candidate that failed validation or grounding.
+    rejected: list[str] = field(default_factory=list)
     total_candidates: int = field(init=False)
 
     def __post_init__(self) -> None:
@@ -94,6 +109,7 @@ class ClipAnalysisResult:
             "transcript_duration": self.transcript_duration,
             "total_candidates": self.total_candidates,
             "candidates": [c.to_dict() for c in self.candidates],
+            "rejected": list(self.rejected),
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -107,6 +123,7 @@ class ClipAnalysisResult:
             candidates=candidates,
             model_name=data["model_name"],
             transcript_duration=data["transcript_duration"],
+            rejected=list(data.get("rejected", [])),
         )
 
     @classmethod

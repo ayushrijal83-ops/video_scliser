@@ -57,16 +57,19 @@ class FakeTranscriber:
 
 
 class FakeAnalyzer:
-    def __init__(self, candidates: list[ClipCandidate], error: Exception | None = None) -> None:
+    def __init__(self, candidates: list[ClipCandidate], error: Exception | None = None,
+                 rejected: list[str] | None = None) -> None:
         self.candidates = candidates
         self.error = error
+        self.rejected = rejected or []
         self.instructions: list[str] = []
 
     def analyze(self, transcript: TranscriptionResult, instruction: str) -> ClipAnalysisResult:
         self.instructions.append(instruction)
         if self.error:
             raise self.error
-        return ClipAnalysisResult(instruction, list(self.candidates), "qwen2.5:0.5b", transcript.duration)
+        return ClipAnalysisResult(instruction, list(self.candidates), "qwen2.5:3b", transcript.duration,
+                                  rejected=list(self.rejected))
 
 
 class FakeVideo:
@@ -144,7 +147,7 @@ class TestSuccess:
         assert (first.start, first.end, first.candidate_start, first.candidate_end) == (2.5, 32.5, 10, 25)
         assert first.reason == "funny" and first.title == "t10"
         assert all(c.end - c.start == pytest.approx(30.0) for c in result.clips)
-        assert result.candidates_returned == 4 and result.model_name == "qwen2.5:0.5b"
+        assert result.candidates_returned == 4 and result.model_name == "qwen2.5:3b"
         assert statuses == [JobStatus.VALIDATING, JobStatus.TRANSCRIBING, JobStatus.ANALYZING, JobStatus.SELECTING,
                             JobStatus.GENERATING, JobStatus.VALIDATING_OUTPUTS, JobStatus.COMPLETED]
         assert all(call[4] is False for call in video.calls)  # never overwrite
@@ -297,3 +300,24 @@ class TestSecurity:
             svc.generate(request(src, tmp_path / "o"))
         assert len(str(exc.value)) < 400
         assert secret_dump not in caplog.text
+
+
+class TestGroundingIntegration:
+    """M08: M05 consumes grounded candidates and reports rejected ones honestly."""
+
+    def test_counts_include_rejected_and_quote_is_reported(self, src: Path, tmp_path: Path) -> None:
+        cands = [ClipCandidate(start=10, end=25, reason="r", score=0.9, quote="exact words here")] + DISTINCT[1:3]
+        analyzer = FakeAnalyzer(cands, rejected=["quote not found in transcript: 'x'"] * 2)
+        svc, _, _ = make(src, analyzer=analyzer)
+        result = svc.generate(request(src, tmp_path / "job", count=3))
+        assert (result.candidates_returned, result.candidates_valid) == (5, 3)
+        assert result.clips[0].quote == "exact words here" and result.clips[1].quote == ""
+
+    def test_insufficient_message_mentions_ungrounded(self, src: Path, tmp_path: Path) -> None:
+        analyzer = FakeAnalyzer(DISTINCT[:1], rejected=["ambiguous quote: 'x'", "quote not found in transcript: 'y'"])
+        svc, video, _ = make(src, analyzer=analyzer)
+        with pytest.raises(InsufficientCandidatesError) as e:
+            svc.generate(request(src, tmp_path / "job", count=2))
+        assert (e.value.found, e.value.requested, e.value.returned, e.value.ungrounded) == (1, 2, 3, 2)
+        assert "AI returned 3 candidates, 2 rejected as ungrounded or invalid" in str(e.value)
+        assert video.calls == [] and not (tmp_path / "job").exists()

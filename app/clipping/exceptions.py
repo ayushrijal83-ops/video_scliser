@@ -44,13 +44,15 @@ class AnalysisStageError(ClipGenerationError):
 class InsufficientCandidatesError(ClipGenerationError):
     stage = JobStatus.SELECTING
 
-    def __init__(self, found: int, requested: int, returned: int) -> None:
+    def __init__(self, found: int, requested: int, returned: int, ungrounded: int = 0) -> None:
         self.found = found
         self.requested = requested
         self.returned = returned
+        self.ungrounded = ungrounded
+        rejected = f", {ungrounded} rejected as ungrounded or invalid" if ungrounded else ""
         super().__init__(
             f"Only {found} sufficiently distinct candidate moments were identified; requested {requested} "
-            f"(AI returned {returned} candidates). No clips were generated."
+            f"(AI returned {returned} candidates{rejected}). No clips were generated."
         )
 
 

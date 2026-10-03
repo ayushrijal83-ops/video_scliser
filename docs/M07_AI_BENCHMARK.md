@@ -5,6 +5,9 @@ Raw per-run results (full model responses included) are written to `output/bench
 Every number below can be re-derived from those files with
 `python -m benchmarks.ai.run_benchmark --summarize output/benchmarks/<file>.json`.
 
+> **M08 update:** the default model is now `qwen2.5:3b`, and clip locations come from Python quote grounding.
+> See "M08 update - timestamp grounding" at the end of this document.
+
 ## TL;DR
 
 | | qwen2.5:0.5b (current default) | qwen2.5:3b |
@@ -197,3 +200,103 @@ The cost of 3b is about 1.9 GB of disk and longer AI time: 51-117 s vs 10-13 s f
 Switching the default to `qwen2.5:3b` is the one change measured to matter. Today it is a configuration choice
 (`OLLAMA_MODEL=qwen2.5:3b`), and it should be decided explicitly by the project, together with the
 timestamp-grounding follow-up above.
+
+---
+
+# M08 update - timestamp grounding (2026-10-03)
+
+M08 made **qwen2.5:3b the default** and changed who decides where a clip is. The model now also returns a `quote`.
+Python locates that quote in the timestamped transcript (`app/ai/grounding.py`), and the model's own start/end are no
+longer the clip location. Same dataset, tasks, 3 runs per cell and temperature 0.1 as M07. M03 now also caps output
+at 3072 tokens (`num_predict`); that only affects runaway replies, and M07-style replies are far below it.
+
+Variants (all in `benchmarks/ai/run_benchmark.py`):
+- **v1**: the M07 production prompt, AI times trusted. Re-run in this session as the baseline.
+- **m08**: the production prompt. The M07 prompt verbatim, plus a quote rule and a `quote` field asked for last
+  with a placeholder example. Graded with the live M03 grounding.
+- **m08-sentence / m08-rules / m08-first**: earlier M08 revisions, measured and rejected (see below).
+
+New columns:
+- **quoted**: raw candidates with a quote.
+- **not found / ambiguous / too short**: rejected by grounding.
+- **AI time wrong**: grounded candidates whose claimed times do not overlap where the quote really is. Each of these
+  is a clip that M07 would have cut in the wrong place.
+
+| model | prompt | task | runs | parse ok | s/run | valid | top-1 hit | precision | irrelevant | quoted | not found | ambiguous | too short | AI time wrong |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|------|
+| qwen2.5:0.5b | m08 | decision | 3 | 3/3 | 37.7 | 15.3 | 0/3 | 0.07 | 0.42 | 46 | 0 | 0 | 0 | 32/46 |
+| qwen2.5:0.5b | m08 | educational | 3 | 3/3 | 41.3 | 16.0 | 0/3 | 0.10 | 0.44 | 48 | 0 | 0 | 0 | 37/48 |
+| qwen2.5:0.5b | m08 | funny | 3 | 2/3 | 54.7 | 10.7 | 0/3 | 0.47 | 0.34 | 32 | 0 | 0 | 0 | 26/32 |
+| qwen2.5:0.5b | m08 | qa | 3 | 3/3 | 38.7 | 15.7 | 0/3 | 0.04 | 0.44 | 48 | 1 | 0 | 0 | 36/47 |
+| qwen2.5:0.5b | m08-rules | decision | 3 | 0/3 | 118.3 | 0.0 | 0/3 | - | - | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:0.5b | m08-rules | educational | 3 | 0/3 | 114.2 | 0.0 | 0/3 | - | - | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:0.5b | m08-rules | funny | 3 | 0/3 | 115.0 | 0.0 | 0/3 | - | - | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:0.5b | m08-rules | qa | 3 | 0/3 | 118.1 | 0.0 | 0/3 | - | - | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:0.5b | m08-sentence | decision | 3 | 1/3 | 50.7 | 1.0 | 0/3 | 0.00 | 0.67 | 4 | 1 | 0 | 0 | 3/3 |
+| qwen2.5:0.5b | m08-sentence | educational | 3 | 1/3 | 51.1 | 1.0 | 0/3 | 0.00 | 1.00 | 7 | 4 | 0 | 0 | 3/3 |
+| qwen2.5:0.5b | m08-sentence | funny | 3 | 3/3 | 5.1 | 2.0 | 0/3 | 0.00 | 0.50 | 9 | 3 | 0 | 0 | 6/6 |
+| qwen2.5:0.5b | m08-sentence | qa | 3 | 1/3 | 51.3 | 1.0 | 1/3 | 0.33 | 0.67 | 5 | 2 | 0 | 0 | 3/3 |
+| qwen2.5:0.5b | v1 | decision | 3 | 3/3 | 12.0 | 11.3 | 0/3 | 0.04 | 0.71 | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:0.5b | v1 | educational | 3 | 3/3 | 19.4 | 16.0 | 0/3 | 0.12 | 0.56 | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:0.5b | v1 | funny | 3 | 3/3 | 18.0 | 16.0 | 0/3 | 0.12 | 0.56 | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:0.5b | v1 | qa | 3 | 3/3 | 15.9 | 16.0 | 0/3 | 0.12 | 0.56 | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:3b | m08 | decision | 3 | 3/3 | 161.4 | 19.7 | 0/3 | 0.02 | 0.68 | 59 | 0 | 0 | 0 | 29/59 |
+| qwen2.5:3b | m08 | educational | 3 | 3/3 | 92.7 | 9.3 | 3/3 | 0.23 | 0.41 | 28 | 0 | 0 | 0 | 3/28 |
+| qwen2.5:3b | m08 | funny | 3 | 3/3 | 60.8 | 6.0 | 3/3 | 0.25 | 0.53 | 18 | 0 | 0 | 0 | 5/18 |
+| qwen2.5:3b | m08 | qa | 3 | 3/3 | 26.6 | 2.7 | 3/3 | 0.42 | 0.17 | 8 | 0 | 0 | 0 | 5/8 |
+| qwen2.5:3b | m08-first | decision | 3 | 3/3 | 101.4 | 10.3 | 0/3 | 0.11 | 0.62 | 31 | 0 | 0 | 0 | 28/31 |
+| qwen2.5:3b | m08-first | educational | 3 | 3/3 | 197.2 | 18.7 | 3/3 | 0.58 | 0.36 | 56 | 0 | 0 | 0 | 50/56 |
+| qwen2.5:3b | m08-first | funny | 3 | 3/3 | 142.0 | 14.3 | 0/3 | 0.20 | 0.66 | 43 | 0 | 0 | 0 | 24/43 |
+| qwen2.5:3b | m08-first | qa | 3 | 3/3 | 210.4 | 19.0 | 0/3 | 0.04 | 0.51 | 57 | 0 | 0 | 0 | 45/57 |
+| qwen2.5:3b | m08-rules | decision | 3 | 3/3 | 82.1 | 7.7 | 1/3 | 0.30 | 0.33 | 23 | 0 | 0 | 0 | 21/23 |
+| qwen2.5:3b | m08-rules | educational | 3 | 3/3 | 157.4 | 15.3 | 1/3 | 0.23 | 0.64 | 48 | 2 | 0 | 0 | 37/46 |
+| qwen2.5:3b | m08-rules | funny | 3 | 3/3 | 60.3 | 5.0 | 1/3 | 0.26 | 0.52 | 15 | 0 | 0 | 0 | 9/15 |
+| qwen2.5:3b | m08-rules | qa | 3 | 3/3 | 128.2 | 13.0 | 0/3 | 0.15 | 0.44 | 40 | 1 | 0 | 0 | 34/39 |
+| qwen2.5:3b | m08-sentence | decision | 3 | 3/3 | 28.1 | 2.0 | 2/3 | 0.50 | 0.00 | 6 | 0 | 0 | 0 | 6/6 |
+| qwen2.5:3b | m08-sentence | educational | 3 | 3/3 | 179.5 | 18.0 | 3/3 | 0.15 | 0.72 | 54 | 0 | 0 | 0 | 37/54 |
+| qwen2.5:3b | m08-sentence | funny | 3 | 3/3 | 123.7 | 12.7 | 2/3 | 0.29 | 0.28 | 42 | 4 | 0 | 0 | 22/38 |
+| qwen2.5:3b | m08-sentence | qa | 3 | 3/3 | 81.4 | 8.0 | 1/3 | 0.03 | 0.23 | 25 | 1 | 0 | 0 | 21/24 |
+| qwen2.5:3b | v1 | decision | 3 | 3/3 | 18.8 | 2.0 | 0/3 | 0.00 | 1.00 | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:3b | v1 | educational | 3 | 3/3 | 54.9 | 8.7 | 3/3 | 0.23 | 0.35 | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:3b | v1 | funny | 3 | 3/3 | 35.2 | 5.0 | 3/3 | 0.20 | 0.60 | 0 | 0 | 0 | 0 | 0/0 |
+| qwen2.5:3b | v1 | qa | 3 | 3/3 | 61.9 | 6.3 | 3/3 | 0.24 | 0.55 | 0 | 0 | 0 | 0 | 0/0 |
+
+## Summary (qwen2.5:3b, 4 tasks × 3 runs)
+
+| variant | top-1 | mean precision | mean irrelevant | s/call | quotes grounded | AI time wrong (corrected) | real Whisper transcript |
+|---|---|---|---|---|---|---|---|
+| v1 (M07, AI times trusted) | 9/12 | 0.17 | 0.63 | 43 | - | - | - |
+| m08-sentence | 8/12 | 0.24 | 0.31 | 103 | 122/127 | 86/122 | **0 grounded**: the example quote was copied into every candidate |
+| m08-rules | 3/12 | 0.24 | 0.48 | 107 | 123/126 | 101/123 | works |
+| m08-first | 3/12 | 0.23 | 0.54 | 163 | 187/187 | 147/187 | works |
+| **m08 (production)** | **9/12** | 0.23 | **0.45** | 85 | **113/113** | **42/113** | works; top picks are the two jokes |
+
+qwen2.5:0.5b with m08: 11/12 parsed, 173/174 quotes grounded, but **top-1 still 0/12**. The 0.5b problem is
+selection, not location. Under the earlier quote-first prompts it looped until the output cap (0/12 parsed with m08-rules).
+
+## What grounding fixed, and what it cannot
+
+- **Fixed: right words, wrong time.** Over the four M08 revisions, 37-82 % of 3b's grounded candidates carried a
+  claimed time that missed their own quote. Examples:
+  - "So here is the decision…", grounded at 117-132 s; 3b claimed 132-141 s.
+  - "Our intern tried to fix the printer…", grounded at 34-44 s; 3b claimed 44-51 s.
+  Every final cut now comes from the quote's transcript position. In a real run (below) it corrected a clip from
+  114.9-116.0 s to 124.0-130.0 s.
+- **Not fixed: wrong words.** On the decision task the production prompt's 3b quoted "The next meeting is the same
+  time next week" (the line after the decision). Grounding places exactly what the model quoted.
+- **Quote position matters.** Asking for the quote *first* made 3b scan line by line: 10-20 candidates, slower, top-1
+  3/12. But its time errors got corrected more often, and the decision task scored 1-2/3. Asking for it *last* keeps
+  M07's ranking (9/12), but the quote sometimes follows the model's own shifted time, so fewer errors show up to correct.
+- **Placeholder vs example.** A sentence-like example quote was copied verbatim by 3b on a real 40-segment Whisper
+  transcript (all 6-10 quotes rejected, so no clips). The angle-bracket placeholder is never copied.
+
+## Real end-to-end (qwen2.5:3b, production prompt)
+
+| run | result | probed clips | AI | total |
+|---|---|---|---|---|
+| funny moments 3 × 10 s | success; the two jokes are clips 1-2; clip 3 grounded 124.00-130.04 s vs AI 114.9-116.0 s | 3 × 10.000000 s, h264 + aac | 167.5 s | 209.1 s |
+| funny moments 3 × 10 s | success; the two jokes are clips 1-2 | 3 × 10.000000 s | 70.9 s | 113.1 s |
+| decision 1 × 10 s | success; the decision sentence grounded 118.46-123.06 s | 10.000000 s | 481.4 s | 523.4 s |
+| browser UI, funny 2 × 10 s | success; intern joke + office announcement | 2 × 10.000000 s | 72 s | 106 s |
+
+Grounding itself costs 26 ms plus ~6 ms per quote, even for a 2-hour transcript. AI inference is the bottleneck.

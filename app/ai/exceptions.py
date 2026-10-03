@@ -61,6 +61,7 @@ class InvalidCandidateError(AIError):
 
     def __init__(self, candidate_data: dict, message: str) -> None:
         self.candidate_data = candidate_data
+        self.reason = message
         super().__init__(f"Invalid candidate {candidate_data}: {message}")
 
 

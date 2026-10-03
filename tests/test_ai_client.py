@@ -16,8 +16,8 @@ class TestOllamaConfig:
     def test_defaults(self) -> None:
         config = OllamaConfig()
         assert config.host == "http://localhost:11434"
-        assert config.model == "qwen2.5:0.5b"
-        assert config.timeout == 120.0
+        assert config.model == "qwen2.5:3b"  # M08 default
+        assert config.timeout == 600.0
 
     def test_custom_values(self) -> None:
         config = OllamaConfig(host="http://remote:11434", model="qwen2.5:7b", timeout=60.0)
@@ -161,3 +161,9 @@ class TestOllamaClient:
         client = create_ollama_client(self.config)
         assert isinstance(client, OllamaClient)
         assert client.config == self.config
+
+def test_ollama_model_env_still_overrides_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:0.5b")
+    assert OllamaConfig.from_env().model == "qwen2.5:0.5b"
+    monkeypatch.delenv("OLLAMA_MODEL")
+    assert OllamaConfig.from_env().model == "qwen2.5:3b"

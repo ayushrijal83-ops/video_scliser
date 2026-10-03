@@ -73,7 +73,7 @@ class FakeTranscriber:
         self.calls += 1
         if self.error:
             raise self.error
-        segs = [TranscriptSegment(float(s), float(s + 2), f"sentence {s}") for s in range(0, SECONDS, 2)]
+        segs = [TranscriptSegment(float(i), float(i + 1), phrase(i)) for i in range(SECONDS)]
         return TranscriptionResult(input_path, "en", 1.0, float(SECONDS), segs, "small")
 
 
@@ -98,8 +98,19 @@ class FakeOllama(OllamaClient):
         return self.reply
 
 
-def reply(*cands: tuple[float, float, float]) -> dict[str, Any]:
-    return {"candidates": [{"start": s, "end": e, "score": sc, "reason": f"moment at {s}"} for s, e, sc in cands]}
+def phrase(i: int) -> str:
+    return f"spoken phrase number {i} here"
+
+
+def quote(start: int, end: int) -> str:
+    """Exact transcript words of 1 s segments start..end-1 (may span several segments)."""
+    return " ".join(phrase(i) for i in range(start, end))
+
+
+def reply(*cands: tuple[int, int, float]) -> dict[str, Any]:
+    """An honest model: quotes segments start..end and claims the same times."""
+    return {"candidates": [{"start": s, "end": e, "score": sc, "reason": f"moment at {s}", "quote": quote(s, e)}
+                           for s, e, sc in cands]}
 
 
 def service(video: VideoService, ai_reply: str | dict[str, Any], transcriber: FakeTranscriber | None = None,
@@ -158,14 +169,14 @@ def test_video_only_extraction_gets_no_invented_audio(media: dict[str, Path], vi
 
 
 def test_candidate_near_beginning_shifts_forward(media: dict[str, Path], video: VideoService, tmp_path: Path) -> None:
-    (clip,) = service(video, reply((0.0, 1.0, 0.9))).generate(req(media["av"], tmp_path / "j", 1, 6.0)).clips
+    (clip,) = service(video, reply((0, 1, 0.9))).generate(req(media["av"], tmp_path / "j", 1, 6.0)).clips
     assert (clip.start, clip.end) == (0.0, 6.0)
     assert abs(video.probe(clip.path).duration - 6.0) <= 0.05
 
 
 def test_candidate_near_end_shifts_backward(media: dict[str, Path], video: VideoService, tmp_path: Path) -> None:
     src = video.probe(media["av"]).duration
-    (clip,) = service(video, reply((19.0, 20.0, 0.9))).generate(req(media["av"], tmp_path / "j", 1, 6.0)).clips
+    (clip,) = service(video, reply((19, 20, 0.9))).generate(req(media["av"], tmp_path / "j", 1, 6.0)).clips
     assert clip.end == pytest.approx(src, abs=1e-3) and clip.end - clip.start == pytest.approx(6.0)
     assert abs(video.probe(clip.path).duration - 6.0) <= 0.05
 
@@ -203,22 +214,31 @@ def test_ranking_follows_ai_scores(media: dict[str, Path], video: VideoService, 
 
 def test_overlapping_and_duplicate_candidates_collapse(media: dict[str, Path], video: VideoService,
                                                        tmp_path: Path) -> None:
-    ai = reply((5, 7, 0.9), (5, 7, 0.85), (5.5, 7.5, 0.8), (14, 16, 0.6))
+    ai = reply((5, 7, 0.9), (5, 7, 0.85), (6, 8, 0.8), (14, 16, 0.6))
     result = service(video, ai).generate(req(media["av"], tmp_path / "j", 2, 4.0))
     assert [c.start for c in result.clips] == [4.0, 13.0]  # exact windows: centre +- 2 s
 
 
 def test_insufficient_candidates_renders_nothing(media: dict[str, Path], video: VideoService, tmp_path: Path) -> None:
     with pytest.raises(InsufficientCandidatesError) as e:
-        service(video, reply((5, 7, 0.9), (5.2, 7.2, 0.8))).generate(req(media["av"], tmp_path / "j", 2, 4.0))
+        service(video, reply((5, 7, 0.9), (6, 7, 0.8))).generate(req(media["av"], tmp_path / "j", 2, 4.0))
     assert (e.value.found, e.value.requested) == (1, 2)
     assert not (tmp_path / "j").exists()
 
 
-def test_ai_timestamps_past_source_are_dropped(media: dict[str, Path], video: VideoService, tmp_path: Path) -> None:
-    ai = reply((30, 35, 0.99), (-1, 3, 0.98), (8, 6, 0.97), (10, 12, 0.5))
-    (clip,) = service(video, ai).generate(req(media["av"], tmp_path / "j", 1, 2.0)).clips
-    assert clip.start == 10.0
+def test_wrong_ai_times_are_ignored_when_quote_grounds(media: dict[str, Path], video: VideoService,
+                                                       tmp_path: Path) -> None:
+    """M08: the cut follows the quote's transcript position, not the times the model claimed."""
+    ai = {"candidates": [
+        {"start": 30, "end": 35, "score": 0.99, "reason": "past the source", "quote": quote(3, 4)},
+        {"start": 8, "end": 6, "score": 0.98, "reason": "reversed", "quote": quote(10, 11)},
+        {"start": 15, "end": 17, "score": 0.97, "reason": "invented words", "quote": "nobody ever said this"},
+    ]}
+    result = service(video, ai).generate(req(media["av"], tmp_path / "j", 2, 2.0))
+    assert [(c.candidate_start, c.candidate_end) for c in result.clips] == [(3.0, 4.0), (10.0, 11.0)]
+    assert [c.start for c in result.clips] == [2.5, 9.5]  # 2 s windows centred on the grounded quotes
+    for clip in result.clips:
+        assert abs(video.probe(clip.path).duration - 2.0) <= 0.05
 
 
 # --- 6: failure behavior ---------------------------------------------------------------------

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app.ai.prompts import (
+    SYSTEM_PROMPT,
     build_prompt,
     format_transcript_for_prompt,
     parse_ai_response,
@@ -150,3 +151,28 @@ class TestParseAIResponse:
         response = json.dumps({"candidates": candidates_list})
         candidates = parse_ai_response(response, max_candidates=20)
         assert len(candidates) == 20
+
+class TestM08QuotePrompt:
+    def test_asks_for_exact_unique_quote_and_puts_semantics_first(self) -> None:
+        p = SYSTEM_PROMPT
+        assert "quote (string)" in p
+        assert "copied exactly from the transcript text" in p
+        assert "no paraphrasing, no invented words" in p
+        assert "appear only once" in p
+        assert "Picking the right moment matters more than exact timestamps" in p
+
+    def test_quote_example_is_a_placeholder_and_comes_last(self) -> None:
+        example = SYSTEM_PROMPT[SYSTEM_PROMPT.index("JSON FORMAT"):]
+        assert '"quote": "<5-20 words copied from the transcript>"' in example
+        assert example.index('"score"') < example.index('"quote"')
+
+    def test_m07_rules_kept_verbatim(self) -> None:
+        for rule in ("2. Identify self-contained moments that make sense as standalone clips.",
+                     "5. Scores represent how well the moment matches the instruction (1.0 = perfect match).",
+                     "8. Respect the user's instruction precisely."):
+            assert rule in SYSTEM_PROMPT
+
+    def test_no_content_specific_hints(self) -> None:
+        lower = SYSTEM_PROMPT.lower()
+        for word in ("joke", "funny", "printer", "cache", "deployment", "decision"):
+            assert word not in lower

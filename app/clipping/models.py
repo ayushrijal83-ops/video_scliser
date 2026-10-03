@@ -79,8 +79,11 @@ class GeneratedClip:
     score: float
     reason: str
     title: str
-    candidate_start: float
+    candidate_start: float  # grounded transcript location of the AI's quote (M08)
     candidate_end: float
+    quote: str = ""
+    ai_start: float | None = None  # what the model claimed; diagnostics only, never used for the cut
+    ai_end: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

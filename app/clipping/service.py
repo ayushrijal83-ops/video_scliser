@@ -22,6 +22,7 @@ from .exceptions import (
     AnalysisStageError,
     ClipGenerationError,
     ClipRenderError,
+    InsufficientCandidatesError,
     InvalidJobRequestError,
     OutputVerificationError,
     SourceTooShortError,
@@ -98,10 +99,15 @@ class ClipGenerationService:
         self._status(JobStatus.ANALYZING, f"{transcript.segment_count} transcript segments")
         analysis = self._analyze(transcript, request.instruction)
 
-        self._status(JobStatus.SELECTING, f"{analysis.total_candidates} AI candidates")
-        moments = select_moments(
-            analysis.candidates, request.clip_count, request.clip_duration, source.duration, self._max_window_iou
-        )
+        # M03 already grounded every candidate's location in the transcript; rejected ones never get here.
+        returned = analysis.total_candidates + len(analysis.rejected)
+        self._status(JobStatus.SELECTING, f"{analysis.total_candidates} grounded of {returned} AI candidates")
+        try:
+            moments = select_moments(
+                analysis.candidates, request.clip_count, request.clip_duration, source.duration, self._max_window_iou
+            )
+        except InsufficientCandidatesError as e:
+            raise InsufficientCandidatesError(e.found, e.requested, returned, len(analysis.rejected)) from None
 
         clips = self._render(request, source, out_dir, paths, moments)
         self._status(JobStatus.COMPLETED, f"{len(clips)} clips in {out_dir}")
@@ -112,7 +118,7 @@ class ClipGenerationService:
             requested_count=request.clip_count,
             requested_duration=request.clip_duration,
             clips=tuple(clips),
-            candidates_returned=analysis.total_candidates,
+            candidates_returned=returned,
             candidates_valid=len(analysis.candidates),
             model_name=analysis.model_name,
         )
@@ -200,6 +206,9 @@ class ClipGenerationService:
                 title=m.candidate.title,
                 candidate_start=m.candidate.start,
                 candidate_end=m.candidate.end,
+                quote=m.candidate.quote,
+                ai_start=m.candidate.ai_start,
+                ai_end=m.candidate.ai_end,
             )
             for m, out in zip(moments, produced)
         ]

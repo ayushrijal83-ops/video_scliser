@@ -80,8 +80,10 @@ class TestAIReasoningService:
         self.mock_client.is_model_available.return_value = True
         self.mock_client.generate.return_value = json.dumps({
             "candidates": [
-                {"start": 30.0, "end": 60.0, "reason": "Deep dive with great insights", "score": 0.92},
-                {"start": 60.0, "end": 90.0, "reason": "Practical tips section", "score": 0.88},
+                {"start": 30.0, "end": 60.0, "reason": "Deep dive with great insights", "score": 0.92,
+                 "quote": "Deep dive into details"},
+                {"start": 60.0, "end": 90.0, "reason": "Practical tips section", "score": 0.88,
+                 "quote": "Practical examples and tips"},
             ]
         })
 
@@ -157,103 +159,79 @@ class TestAIReasoningService:
         assert result.total_candidates == 0
         assert result.has_candidates is False
 
-    def test_analyze_invalid_candidate_negative_timestamp(self) -> None:
+    def _analyze(self, *candidates: dict, duration: float = 120.0) -> ClipAnalysisResult:
         self.mock_client.is_available.return_value = True
         self.mock_client.is_model_available.return_value = True
-        self.mock_client.generate.return_value = json.dumps({
-            "candidates": [{"start": -5.0, "end": 10.0, "reason": "test", "score": 0.9}]
-        })
-        transcript = self._make_transcript()
-        result = self.service.analyze(transcript, "Find moments")
-        # Invalid candidate should be skipped
-        assert result.total_candidates == 0
+        self.mock_client.generate.return_value = json.dumps({"candidates": list(candidates)})
+        return self.service.analyze(self._make_transcript(duration=duration), "Find moments")
 
-    def test_analyze_invalid_candidate_end_before_start(self) -> None:
-        self.mock_client.is_available.return_value = True
-        self.mock_client.is_model_available.return_value = True
-        self.mock_client.generate.return_value = json.dumps({
-            "candidates": [{"start": 20.0, "end": 10.0, "reason": "test", "score": 0.9}]
-        })
-        transcript = self._make_transcript()
-        result = self.service.analyze(transcript, "Find moments")
-        assert result.total_candidates == 0
+    @pytest.mark.parametrize(
+        ("start", "end"), [(-5.0, 10.0), (20.0, 10.0), (100.0, 200.0), ("x", None), (float("nan"), 3.0)]
+    )
+    def test_bad_ai_times_do_not_matter_when_quote_grounds(self, start: object, end: object) -> None:
+        """M08: AI times are hints; the location comes from the quote's place in the transcript."""
+        cand = {"start": start, "end": end, "reason": "test", "score": 0.9, "quote": "deep dive into details"}
+        result = self._analyze(cand)
+        assert result.total_candidates == 1
+        assert (result.candidates[0].start, result.candidates[0].end) == (30.0, 60.0)
+        assert result.candidates[0].transcript_text == "deep dive into details"
 
-    def test_analyze_candidate_exceeds_duration(self) -> None:
-        self.mock_client.is_available.return_value = True
-        self.mock_client.is_model_available.return_value = True
-        self.mock_client.generate.return_value = json.dumps({
-            "candidates": [{"start": 100.0, "end": 200.0, "reason": "test", "score": 0.9}]
-        })
-        transcript = self._make_transcript(duration=120.0)
-        result = self.service.analyze(transcript, "Find moments")
-        assert result.total_candidates == 0
+    def test_missing_ai_times_still_grounded(self) -> None:
+        result = self._analyze({"reason": "test", "score": 0.9, "quote": "Practical examples and tips"})
+        assert (result.candidates[0].start, result.candidates[0].end) == (60.0, 90.0)
+        assert result.candidates[0].ai_start is None and result.candidates[0].ai_end is None
 
     def test_analyze_invalid_score(self) -> None:
-        self.mock_client.is_available.return_value = True
-        self.mock_client.is_model_available.return_value = True
-        self.mock_client.generate.return_value = json.dumps({
-            "candidates": [{"start": 10.0, "end": 20.0, "reason": "test", "score": 1.5}]
-        })
-        transcript = self._make_transcript()
-        result = self.service.analyze(transcript, "Find moments")
+        result = self._analyze({"start": 30.0, "end": 60.0, "reason": "t", "score": 1.5, "quote": "deep dive into details"})
         assert result.total_candidates == 0
+        assert result.rejected[0].startswith("score must be in [0.0, 1.0]")
 
     def test_analyze_missing_reason(self) -> None:
-        self.mock_client.is_available.return_value = True
-        self.mock_client.is_model_available.return_value = True
-        self.mock_client.generate.return_value = json.dumps({
-            "candidates": [{"start": 10.0, "end": 20.0, "score": 0.9}]
-        })
-        transcript = self._make_transcript()
-        result = self.service.analyze(transcript, "Find moments")
+        result = self._analyze({"start": 30.0, "end": 60.0, "score": 0.9, "quote": "deep dive into details"})
+        assert result.total_candidates == 0 and result.rejected[0].startswith("reason cannot be empty")
+
+    def test_missing_quote_rejected_never_falls_back_to_ai_time(self) -> None:
+        result = self._analyze({"start": 30.0, "end": 60.0, "reason": "valid times, no quote", "score": 0.9})
         assert result.total_candidates == 0
+        assert result.rejected == ["no quote to locate the moment: ''"]
+
+    def test_ungrounded_quote_rejected_with_reason(self) -> None:
+        result = self._analyze(
+            {"start": 30.0, "end": 60.0, "reason": "r", "score": 0.9, "quote": "words the speaker never said"},
+            {"start": 0.0, "end": 30.0, "reason": "r", "score": 0.8, "quote": "Introduction to the topic"},
+        )
+        assert [c.start for c in result.candidates] == [0.0]  # the other candidate still flows through
+        assert result.rejected == ["quote not found in transcript: 'words the speaker never said'"]
 
     def test_analyze_deterministic_ordering(self) -> None:
-        self.mock_client.is_available.return_value = True
-        self.mock_client.is_model_available.return_value = True
-        self.mock_client.generate.return_value = json.dumps({
-            "candidates": [
-                {"start": 30.0, "end": 40.0, "reason": "B", "score": 0.8},
-                {"start": 10.0, "end": 20.0, "reason": "A", "score": 0.8},
-                {"start": 50.0, "end": 60.0, "reason": "C", "score": 0.9},
-            ]
-        })
-        transcript = self._make_transcript()
-        result = self.service.analyze(transcript, "Find moments")
-        # Should be sorted by score desc, then start asc
-        assert result.candidates[0].score == 0.9
-        assert result.candidates[1].start == 10.0  # Same score 0.8, earlier start first
-        assert result.candidates[2].start == 30.0
+        result = self._analyze(
+            {"reason": "B", "score": 0.8, "quote": "Practical examples and tips"},
+            {"reason": "A", "score": 0.8, "quote": "Deep dive into details"},
+            {"reason": "C", "score": 0.9, "quote": "Conclusion and summary"},
+        )
+        # Sorted by score desc, then grounded start asc
+        assert [c.reason for c in result.candidates] == ["C", "A", "B"]
+        assert [c.start for c in result.candidates] == [90.0, 30.0, 60.0]
 
     def test_analyze_candidate_limit(self) -> None:
+        segs = [TranscriptSegment(start=float(i), end=i + 1.0, text=f"unique sentence number {i}") for i in range(50)]
         self.mock_client.is_available.return_value = True
         self.mock_client.is_model_available.return_value = True
-        candidates = [{"start": i, "end": i + 1, "reason": f"r{i}", "score": 0.9} for i in range(50)]
+        candidates = [{"reason": f"r{i}", "score": 0.9, "quote": f"sentence number {i}"} for i in range(50)]
         self.mock_client.generate.return_value = json.dumps({"candidates": candidates})
-        transcript = self._make_transcript(duration=100.0)
-        result = self.service.analyze(transcript, "Find moments")
+        result = self.service.analyze(self._make_transcript(segs, duration=100.0), "Find moments")
         assert result.total_candidates == 10  # max_candidates=10
 
     def test_analyze_with_optional_fields(self) -> None:
-        self.mock_client.is_available.return_value = True
-        self.mock_client.is_model_available.return_value = True
-        self.mock_client.generate.return_value = json.dumps({
-            "candidates": [{
-                "start": 10.0,
-                "end": 20.0,
-                "reason": "Great moment",
-                "score": 0.9,
-                "title": "Key insight",
-                "transcript_text": "This is the key part",
-                "confidence": 0.95,
-            }]
+        result = self._analyze({
+            "start": 10.0, "end": 20.0, "reason": "Great moment", "score": 0.9, "title": "Key insight",
+            "quote": "“Introduction to the Topic.”", "confidence": 0.95,
         })
-        transcript = self._make_transcript()
-        result = self.service.analyze(transcript, "Find moments")
-        assert result.total_candidates == 1
-        assert result.candidates[0].title == "Key insight"
-        assert result.candidates[0].transcript_text == "This is the key part"
-        assert result.candidates[0].confidence == 0.95
+        c = result.candidates[0]
+        assert (c.title, c.confidence, c.start, c.end) == ("Key insight", 0.95, 0.0, 30.0)
+        assert c.quote == "“Introduction to the Topic.”"
+        assert c.transcript_text == "introduction to the topic"
+        assert (c.ai_start, c.ai_end) == (10.0, 20.0)
 
 
 class TestAnalyzeTranscriptConvenience:
@@ -276,3 +254,22 @@ class TestAnalyzeTranscriptConvenience:
 
         assert result == mock_result
         mock_service.analyze.assert_called_once_with(transcript, "Find moments")
+
+
+def test_output_token_cap_sent_to_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M08: a looping model must stop at a token cap instead of running until the timeout."""
+    monkeypatch.delenv("AI_MAX_OUTPUT_TOKENS", raising=False)
+    assert AIReasoningConfig.from_env().max_output_tokens == 3072
+    monkeypatch.setenv("AI_MAX_OUTPUT_TOKENS", "500")
+    config = AIReasoningConfig.from_env()
+    client = Mock(spec=OllamaClient)
+    client.is_available.return_value = True
+    client.is_model_available.return_value = True
+    client.generate.return_value = '{"candidates": [{"quote": "unterminated'  # what a capped loop returns
+    seg = TranscriptSegment(start=0.0, end=5.0, text="hello there world")
+    with pytest.raises(AIResponseParseError):
+        AIReasoningService(config, client=client).analyze(
+            TranscriptionResult("t.mp4", "en", 1.0, 5.0, [seg], "small"), "funny")
+    assert client.generate.call_args.kwargs["options"] == {"temperature": 0.1, "num_predict": 500}
+    with pytest.raises(InvalidConfigurationError):
+        AIReasoningConfig(ollama_config=OllamaConfig(), max_output_tokens=0)

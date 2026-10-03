@@ -16,8 +16,10 @@ from .exceptions import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "http://localhost:11434"
-DEFAULT_MODEL = "qwen2.5:0.5b"
-DEFAULT_TIMEOUT = 120.0
+# M08: qwen2.5:3b is the default (M07 benchmark: 0.5b made no meaningful selections). OLLAMA_MODEL overrides it.
+DEFAULT_MODEL = "qwen2.5:3b"
+# One 3b call took up to 117 s on a 2.5 min video in M07, so 120 s would fail on longer videos.
+DEFAULT_TIMEOUT = 600.0
 
 
 class OllamaClientProtocol(Protocol):

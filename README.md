@@ -26,7 +26,7 @@ ai-video-clipper/
 └── requirements.txt
 ```
 
-## Current Milestone: **Milestone 07 - End-to-End Integration, Reliability & AI Quality Evaluation** ✅
+## Current Milestone: **Milestone 08 - AI Selection Quality & Timestamp Grounding** ✅
 
 - [x] Project structure created
 - [x] Python virtual environment
@@ -66,12 +66,16 @@ ai-video-clipper/
 - [x] Real E2E harness with per-stage timings; 0.5B vs 3B AI quality benchmark (`docs/M07_AI_BENCHMARK.md`)
 - [x] Fixed: transcript duration was always 0.0 ("Could not determine audio duration"), wrong-shape AI JSON crash, model-tag check
 - [x] 440 tests (439 pass + 1 opt-in), `ruff check .` and `mypy app benchmarks` clean
+- [x] Default model `qwen2.5:3b` (`OLLAMA_MODEL` overrides; `qwen2.5:0.5b` still supported)
+- [x] Timestamp grounding: the AI returns an exact quote; Python finds it in the word-timestamped transcript, and
+      that position (never the AI's claimed time) is where the clip is cut. Ungrounded or ambiguous quotes are rejected.
+- [x] 487 tests (486 pass + 1 opt-in), incl. 32 grounding tests; real 3b E2E and browser test verified
 
 ## Future Milestones
 
 | Milestone | Focus |
 |-----------|-------|
-| **08** | Selection quality: model decision & timestamp grounding (recommended, see `docs/PROJECT_PROGRESS.md`) |
+| **09** | AI inference performance: candidate budget tied to the clip count (recommended, see `docs/PROJECT_PROGRESS.md`) |
 
 ## Development Setup
 
@@ -112,28 +116,31 @@ mypy app/
 pytest                                   # 439 tests; no Ollama/Whisper needed; FFmpeg tests auto-skip without FFmpeg
 ```
 
-**Real end-to-end check** (local only: FFmpeg on PATH, Ollama running, `qwen2.5:0.5b` and/or `qwen2.5:3b` pulled,
-faster-whisper `small`, which downloads once on first use):
+**Real end-to-end check** (local only: FFmpeg on PATH, Ollama running with `qwen2.5:3b` pulled (or the model in
+`OLLAMA_MODEL`), and faster-whisper `small`, which downloads once on first use):
 
 ```bash
 python -m benchmarks.e2e.run_real_e2e --synthesize                      # Windows: makes a 147 s speech test video
-python -m benchmarks.e2e.run_real_e2e --synthesize --model qwen2.5:3b -n 3 -d 10 -i "funny moments"
+python -m benchmarks.e2e.run_real_e2e --synthesize -n 3 -d 10 -i "funny moments"     # default qwen2.5:3b
+python -m benchmarks.e2e.run_real_e2e --synthesize --model qwen2.5:0.5b             # compare the small model
 python -m benchmarks.e2e.run_real_e2e --video input/talk.mp4 -n 2 -d 15  # any local speech video
 CLIPPER_REAL_E2E=1 pytest tests/test_real_e2e.py -s                     # same, as an opt-in test
 ```
 
 **Success** means exactly N clips, each re-probed within the M04 tolerance of the requested duration, with audio kept.
 The exit code is 0. The harness prints per-stage timings and writes `output/e2e/<timestamp>/report.json` plus the
-clips. Delete `output/e2e/` to clean up. Typical time on this laptop CPU (Core Ultra 5 125H) for a 147 s video with
+clips. For each clip it reports the quote, its grounded transcript span, the AI's claimed times, and whether the cut
+contains the grounded quote. It also lists every rejected (ungrounded) candidate.
+Delete `output/e2e/` to clean up. Typical time on this laptop CPU (Core Ultra 5 125H) for a 147 s video with
 3 × 10 s clips:
 - transcription ~38 s
-- AI ~10-13 s (0.5b) or 51-117 s (3b)
+- AI ~10-13 s (0.5b) or 51-117 s (3b) in M07; with M08 quotes, 3b took 71-481 s (see `docs/M07_AI_BENCHMARK.md`)
 - FFmpeg ~0.6 s per clip
 
 **AI quality benchmark** (labelled transcript in `benchmarks/ai/dataset.json`; the labels are never sent to the model):
 
 ```bash
-python -m benchmarks.ai.run_benchmark --models qwen2.5:0.5b qwen2.5:3b --runs 3   # ~1 h on CPU
+python -m benchmarks.ai.run_benchmark --models qwen2.5:0.5b qwen2.5:3b --runs 3   # v1 (M07) vs m08 (grounded), ~1 h
 python -m benchmarks.ai.run_benchmark --tasks funny --runs 5 --temperature 0 --seed 42
 python -m benchmarks.ai.run_benchmark --summarize output/benchmarks/<file>.json   # rescore saved runs
 ```
@@ -268,7 +275,7 @@ Jobs are **all-or-nothing**: if clip 7 fails to render or verify, clips 1-6 of t
 
 ### Requirements and performance
 
-FFmpeg on PATH, the Ollama daemon running with `qwen2.5:0.5b` pulled, and the faster-whisper model.
+FFmpeg on PATH, the Ollama daemon running with the configured model pulled (default `qwen2.5:3b`), and the faster-whisper model.
 The `small` model is downloaded once from Hugging Face on first use (~480 MB) and cached after that.
 Measured on an Intel Core Ultra 5 125H (CPU only) with a 70 s 640x360 video: transcription ~17 s, Qwen ~11-22 s,
 FFmpeg ~0.7 s per 10-15 s clip, **~41 s per job**. Transcription grows with speech length and rendering with resolution × clip duration.
@@ -384,20 +391,24 @@ python -m app.ai transcript.json "Find educational moments" --model qwen2.5:0.5b
 ```json
 {
   "instruction": "Find the most educational moments",
-  "model_name": "qwen2.5:0.5b",
+  "model_name": "qwen2.5:3b",
   "transcript_duration": 120.5,
   "total_candidates": 3,
   "candidates": [
     {
-      "start": 35.0,
-      "end": 55.0,
+      "start": 35.2,
+      "end": 41.8,
       "reason": "Clear explanation of data types with examples",
       "score": 0.92,
       "title": "",
-      "transcript_text": "",
-      "confidence": 1.0
+      "transcript_text": "a variable has a type that decides what you can do with it",
+      "confidence": 1.0,
+      "quote": "A variable has a type that decides what you can do with it",
+      "ai_start": 50.0,
+      "ai_end": 58.0
     }
-  ]
+  ],
+  "rejected": ["quote not found in transcript: 'types are like boxes'"]
 }
 ```
 
@@ -405,8 +416,9 @@ python -m app.ai transcript.json "Find educational moments" --model qwen2.5:0.5b
 
 ```bash
 OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:0.5b
-OLLAMA_TIMEOUT=120
+OLLAMA_MODEL=qwen2.5:3b        # default since M08; qwen2.5:0.5b still works
+OLLAMA_TIMEOUT=600             # seconds per AI call (one 3b call took up to 117 s on a 2.5 min video)
+AI_MAX_OUTPUT_TOKENS=3072      # Ollama num_predict cap; stops a model that loops instead of finishing
 AI_MAX_CANDIDATES=20
 AI_TEMPERATURE=0.1
 ```
@@ -481,16 +493,26 @@ Default model: **`small`** (244M parameters, ~488 MB)
 
 ### AI Reasoning (Ollama)
 
-Default model: **`qwen2.5:0.5b`** (494M parameters, ~398 MB)
+Default model: **`qwen2.5:3b`** (3B parameters, ~1.9 GB) since M08. Pull it once with `ollama pull qwen2.5:3b`.
 
 | Model | Parameters | Size | CPU Speed | Quality |
 |-------|------------|------|-----------|---------|
-| **qwen2.5:0.5b** | **494M** | **398 MB** | **Fast** | **Weak** (M07: top-1 moment correct 0/12, real E2E 0/3) |
-| qwen2.5:3b | 3B | 1.9 GB | Slow (51-117 s per job) | **Better** (M07: top-1 9/12, real E2E 3/3) |
+| qwen2.5:0.5b | 494M | 398 MB | Fast | Weak (M07: top-1 moment correct 0/12, real E2E 0/3) |
+| **qwen2.5:3b (default)** | **3B** | **1.9 GB** | **Slow (~1-8 min AI per job on a laptop CPU)** | **Better** (see `docs/M07_AI_BENCHMARK.md`) |
 | qwen2.5:7b | 7B | 4.7 GB | Very Slow | Best |
 
-Models download manually via `ollama pull <model>`. To use 3B without code changes: `OLLAMA_MODEL=qwen2.5:3b`.
-The default is still 0.5B; the measured trade-off is in `docs/M07_AI_BENCHMARK.md`.
+Models download manually via `ollama pull <model>`; nothing is pulled automatically. To use another model, set
+`OLLAMA_MODEL` before starting the CLI or the web UI:
+
+```powershell
+$env:OLLAMA_MODEL = "qwen2.5:0.5b"   # Windows PowerShell (this terminal only)
+python -m app.ui
+Remove-Item Env:OLLAMA_MODEL         # back to the default
+```
+
+```bash
+OLLAMA_MODEL=qwen2.5:0.5b python -m app.ui   # Linux/macOS/Git Bash
+```
 
 ## License
 

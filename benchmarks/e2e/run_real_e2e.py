@@ -41,6 +41,18 @@ OUT_ROOT = Path("output/e2e")
 DATASET = Path(__file__).resolve().parents[1] / "ai" / "dataset.json"
 
 
+class _RejectedCandidates(logging.Handler):
+    """Collects M03's "Skipping AI candidate N: reason" warnings for the report."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage().startswith("Skipping AI candidate"):
+            self.messages.append(record.getMessage())
+
+
 def synthesize_video(target: Path) -> Path:
     """Speak the benchmark transcript with Windows SAPI and mux it over an FFmpeg test pattern."""
     if sys.platform != "win32":
@@ -69,6 +81,8 @@ def synthesize_video(target: Path) -> Path:
 def run(video: Path, count: int, duration: float, instruction: str, model: str, whisper_model: str,
         out_dir: Path) -> dict[str, Any]:
     marks: list[tuple[str, float]] = []
+    rejected = _RejectedCandidates()
+    logging.getLogger("app.ai.service").addHandler(rejected)
 
     def on_status(status: JobStatus, detail: str) -> None:
         marks.append((status.value, time.perf_counter()))
@@ -95,11 +109,21 @@ def run(video: Path, count: int, duration: float, instruction: str, model: str, 
         clips = []
         for c in result.clips:
             info = probe.probe(c.path)
+            # M08: the cut must contain the quote's grounded transcript span (when it fits in the clip).
+            contains = c.start - 1e-6 <= c.candidate_start and c.candidate_end <= c.end + 1e-6
+            fits = c.candidate_end - c.candidate_start <= duration
             clips.append({"index": c.index, "start": c.start, "end": c.end, "score": c.score, "reason": c.reason,
+                          "quote": c.quote, "grounded": [c.candidate_start, c.candidate_end],
+                          "ai_claimed": [c.ai_start, c.ai_end], "cut_contains_grounded_quote": contains or not fits,
                           "probed_duration": info.duration, "audio": info.audio_codec, "video": info.video_codec,
-                          "ok": abs(info.duration - duration) <= tol and info.has_audio})
-        report.update(success=len(clips) == count and all(c["ok"] for c in clips), clips=clips,
+                          "ok": abs(info.duration - duration) <= tol and info.has_audio and info.has_video
+                          and (contains or not fits)})
+        leftovers = sorted(p.name for p in out_dir.iterdir() if not p.name.startswith("clip_"))
+        report.update(success=len(clips) == count and all(c["ok"] for c in clips) and not leftovers,
+                      clips=clips, leftover_files=leftovers,
                       candidates_returned=result.candidates_returned, candidates_valid=result.candidates_valid)
+    logging.getLogger("app.ai.service").removeHandler(rejected)
+    report["rejected_candidates"] = rejected.messages
     report["total_seconds"] = time.perf_counter() - started
     # Stage time = time until the next status callback.
     report["stage_seconds"] = {a[0]: round(b[1] - a[1], 2) for a, b in itertools.pairwise(marks)}
@@ -134,8 +158,12 @@ def main() -> int:
     (out_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in report.items() if k != "clips"}, indent=2))
     for c in report.get("clips", []):
-        print(f"clip {c['index']}: {c['start']:.2f}-{c['end']:.2f}s probed {c['probed_duration']:.3f}s "
-              f"audio={c['audio']} score={c['score']} ok={c['ok']} | {c['reason']}")
+        print(f"clip {c['index']}: cut {c['start']:.2f}-{c['end']:.2f}s probed {c['probed_duration']:.3f}s "
+              f"audio={c['audio']} score={c['score']} ok={c['ok']}\n"
+              f"    quote {c['quote']!r} grounded {c['grounded']} AI claimed {c['ai_claimed']}\n"
+              f"    reason: {c['reason']}")
+    for r in report.get("rejected_candidates", []):
+        print(f"rejected: {r}")
     print(f"{'SUCCESS' if report['success'] else 'FAILED'} - report: {out_dir / 'report.json'}")
     return 0 if report["success"] else 1
 

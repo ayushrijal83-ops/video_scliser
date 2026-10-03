@@ -27,7 +27,212 @@ Build a completely free, local AI-powered automatic video clipper that:
 
 ---
 
-## Current Milestone: **Milestone 07 - End-to-End Integration, Reliability & AI Quality Evaluation**
+## Current Milestone: **Milestone 08 - AI Selection Quality & Timestamp Grounding**
+
+**Status: COMPLETED**
+
+### Objective
+
+M07 found that qwen2.5:3b often picks the right sentence but returns the wrong timestamps. M08 separates the two jobs:
+
+**AI decides WHAT is interesting (reason, score, an exact quote). Python decides WHERE it happened (transcript
+timestamps). FFmpeg decides HOW to cut it.**
+
+### Model default change
+
+- `DEFAULT_MODEL` is now **`qwen2.5:3b`** (`app/ai/client.py`), based on the M07 benchmark.
+- `OLLAMA_MODEL` still overrides it, and `qwen2.5:0.5b` remains fully supported.
+- The AI CLI's `--model` default now honours `OLLAMA_MODEL` too; before, it was hardcoded.
+- `DEFAULT_TIMEOUT` rose from 120 s to **600 s**. M07 measured one 3b call at 117 s on a 2.5 min video, so 120 s
+  would fail on longer videos. `OLLAMA_TIMEOUT` overrides it.
+
+### Grounding architecture
+
+```
+Transcript (M02, word timestamps) ─┐
+                                   ├─> M03 prompt -> Qwen -> JSON {start, end, reason, score, quote}
+                                   │                              │
+                                   └──────────> M03 validation + app/ai/grounding.py (Python, deterministic)
+                                                   quote -> transcript position (word-level, else segment-level)
+                                                   ungrounded -> rejected with a reason (never the AI time)
+                                                                  │
+                     ClipCandidate(start/end = grounded transcript times, ai_start/ai_end = model claim)
+                                                                  │
+          M05 unchanged: normalize -> rank -> IoU dedupe -> exact-duration windows -> M04 FFmpeg -> verify
+```
+
+Grounding runs inside M03's existing validation step (`AIReasoningService._validate_and_create_candidates`), right
+after the model output is parsed. That is the only place that has both the raw AI candidates and the timestamped
+transcript. M05's selection engine is unchanged: it receives candidates whose `start`/`end` are already transcript
+times.
+
+Model changes:
+- `ClipCandidate` gains `quote`, `ai_start` and `ai_end`. The AI times are diagnostics, and a tie-breaker between identical quotes.
+- `ClipAnalysisResult` gains `rejected` (one "reason: quote" line per rejected candidate).
+- `GeneratedClip` gains `quote`, `ai_start` and `ai_end`.
+
+### Grounding algorithm (`app/ai/grounding.py`, ~100 lines, stdlib only)
+
+1. **Normalize** both the quote and the transcript into word tokens: NFKC unicode, lower case, curly/straight
+   apostrophes unified then dropped (`don't` = `dont`), every other punctuation mark and all whitespace removed
+   (`logged-out` = `logged out`, `“Hello,”` = `hello`). The transcript text and timestamps themselves are never modified.
+2. **Token stream with real times.** Each Whisper word yields its tokens with that word's `start`/`end`. A segment
+   without word timestamps yields its tokens with the segment's `start`/`end`.
+3. **Exact contiguous token-sequence search.** The quote must appear as consecutive tokens; a quote may span segments.
+   The grounded range is the first token's `start` to the last token's `end`. Example: words at 80.10 … 81.01 for
+   "we should change the deployment process" ground to 80.10 → end of "process".
+4. **Rejected, never guessed:**
+   - fewer than 3 tokens (`MIN_QUOTE_TOKENS`)
+   - not found (one word differs, words reordered, paraphrased, the prompt's placeholder copied)
+   - a zero-length span
+5. **Ambiguous (the same quote occurs several times):** the model's own start/end may pick an occurrence only if it
+   overlaps **exactly one** of them. The final times are still that occurrence's transcript times. If the AI time is
+   missing, invalid, or overlaps none or several occurrences, the candidate is rejected as ambiguous.
+6. Rejections are logged and returned in `ClipAnalysisResult.rejected`, and the remaining candidates continue.
+   - M05 now reports honest counts: `candidates_returned` includes rejected ones (the M07 "AI returned 0" limitation).
+   - The insufficient-candidates error says how many were rejected as ungrounded.
+
+**Cost:** 26 ms to build the token stream of a synthetic 2-hour transcript (16,303 words), plus about 6 ms per
+quote. That's negligible next to 1-8 minutes of AI time.
+
+### Prompt (M03)
+
+The M07 prompt is kept verbatim, plus one rule and a `quote` field asked for **last**, with a placeholder example. The
+rule says: copy 5-20 consecutive words exactly, no paraphrase, no invented words, no "...", words that appear only
+once, and picking the right moment matters more than exact timestamps. No content words or test-specific hints are
+in it (tested).
+
+Four revisions were measured on 3b. The earlier ones are kept as benchmark variants (`m08-sentence`, `m08-rules`,
+`m08-first`):
+
+| 3b prompt revision | top-1 (12) | real Whisper transcript |
+|---|---|---|
+| quote first, sentence-like example | 8 | **0 grounded:** 3b copied the example quote into every candidate |
+| quote first, placeholder, reworded rule | 3 | works |
+| quote first, placeholder | 3 | works, but 3b listed 10-19 candidates and ranked worse |
+| **quote last, placeholder (production)** | **9** | works; top picks are the two jokes for "funny moments" |
+
+### Robustness fixes found by the measurements
+
+- **Output token cap.** qwen2.5:0.5b got stuck repeating one candidate until the request timed out (600 s).
+  M03 now sends `num_predict` (default 3072, `AI_MAX_OUTPUT_TOKENS`). A runaway reply is cut off, fails JSON parsing,
+  and becomes a clean `AIResponseParseError`. 3072 tokens ≈ 7 min for 3b on this CPU, inside the timeout.
+- **numpy floats.** faster-whisper word times are numpy floats. Grounding now returns plain floats, which fixed a JSON
+  crash in the E2E harness report.
+
+### Tests (487 collected: 486 passed, 1 opt-in skipped)
+
+- **`tests/test_grounding.py` (32).** Covers:
+  - normalization; exact, case, punctuation/quote-mark and whitespace differences; a sub-span of a segment
+  - a quote spanning segments; word-level timestamps; word-level across segments with a hyphen and an apostrophe;
+    segment-level fallback
+  - not found (one word differs, out of order, runs past the text, hostile shell/path text); token boundaries
+    (`cat` ≠ `category`); a short quote
+  - ambiguous without an AI time; a repeated quote resolved by the AI time (both occurrences); 5 unresolvable hints; determinism
+  - the regression from the brief: quote at 40-45 s, AI claims 90-95 s → candidate 40-45 s, 10 s window 37.5-47.5 s
+  - correct quote with no usable AI time; ungrounded candidates rejected while others continue
+  - multiple grounded candidates ranked and windowed exactly; grounded overlap deduplicated by M05; a repeated quote end to end
+  - numpy word times
+- **Updated for the new contract:**
+  - `test_ai_service.py`: bad AI times are ignored when the quote grounds; a missing quote, bad score or missing
+    reason is rejected with that reason; output-token cap.
+  - `test_e2e_pipeline.py`: the fake model sends real quotes; a new real-FFmpeg test shows wrong AI times are ignored
+    and an invented quote is rejected.
+  - `test_clipping_service.py`: honest counts; the ungrounded count in the insufficient message; quote on results.
+  - `test_ai_client.py`: default `qwen2.5:3b`, `OLLAMA_MODEL` override, 600 s timeout.
+  - `test_ai_prompts.py`: the M08 quote rules, placeholder-last, M07 rules verbatim, no content hints.
+  - `test_benchmark_metrics.py`: m08 scoring uses live grounding; v1 uses M07 validation.
+- All M02-M07 suites still pass. Ruff is clean repo-wide, and `mypy app benchmarks` is clean.
+
+### Benchmark (same dataset, tasks and 3 runs as M07; full table in `docs/M07_AI_BENCHMARK.md` → "M08")
+
+| | qwen2.5:3b v1 (M07: AI times trusted) | **qwen2.5:3b m08 (grounded)** | qwen2.5:0.5b v1 | qwen2.5:0.5b m08 |
+|---|---|---|---|---|
+| top-1 moment matches the task | 9/12 | **9/12** | 0/12 | 0/12 |
+| mean precision | 0.17 | 0.23 | 0.10 | 0.17 |
+| mean irrelevant rate | 0.63 | **0.45** | 0.60 | 0.41 |
+| quotes grounded | - | **113/113** (0 not found, 0 ambiguous) | - | 173/174 |
+| grounded candidates whose AI time was wrong | - | **42/113 (37 %)**, each one corrected | - | 131/173 |
+| AI time per call | 43 s | 85 s | 16 s | 43 s |
+
+On the decision task 3b quoted the line *after* the decision (the line at its own claimed time), so top-1 there
+stays 0/3. Grounding corrects "right words, wrong time", not "wrong words".
+
+### Real end-to-end (qwen2.5:3b, faster-whisper small, FFmpeg 9.0.2; local only)
+
+`python -m benchmarks.e2e.run_real_e2e --synthesize ...` on the 146.7 s locally synthesized speech video:
+
+| run | result | clips (probed) | grounding evidence |
+|---|---|---|---|
+| funny moments, 3 × 10 s | success | 10.000000 / 10.000000 / 10.000000 s, h264 + aac | top 2 = the two jokes; **clip 3: quote grounded 124.00-130.04 s, AI claimed 114.9-116.0 s; the cut 122.02-132.02 s follows the transcript** |
+| funny moments, 3 × 10 s | success | 3 × 10.000000 s, h264 + aac | top 2 = the two jokes; AI times agreed with grounding |
+| decision exposure, 1 × 10 s | success | 10.000000 s, h264 + aac | the decision sentence grounded at 118.46-123.06 s; the cut 115.76-125.76 s contains it |
+
+In every run each cut contains its grounded quote, no partial or temporary files remained, and rejections were
+only 2-word fillers ("Bye bye.", "See you.").
+
+### Performance (Intel Core Ultra 5 125H, CPU only; 146.7 s video)
+
+| stage | measured |
+|---|---|
+| transcription (incl. Whisper load) | 39.6-41.4 s |
+| AI reasoning (3b) | 70.9 / 167.5 / 481.4 s (UI run: 72 s) |
+| grounding | < 0.1 s (26 ms + ~6 ms per quote even for a 2-hour transcript) |
+| selection | < 10 ms |
+| FFmpeg + verification | 0.48 s (1 clip), 1.68 s (3 clips) |
+| total | 113-209 s for 3 clips; 523 s for the decision run |
+
+AI time is the bottleneck. The quote adds output tokens, and on the decision task 3b listed nearly every line (~20
+candidates), producing a reply close to the 3072-token cap.
+
+### UI regression (real browser, qwen2.5:3b)
+
+The M06 UI was **unchanged**. In Chrome at `http://127.0.0.1:5000/`: upload `meeting_speech.mp4`, 2 × 10 s, "funny
+moments" → the real stage progress → "2 clips ready" in 106 s (AI 72 s).
+- Both downloads returned 200, and the files probe at 10.000000 s, h264 + aac.
+- Traversal and `/download?path=` returned 404. The page shows no internal paths, rejection reasons or AI times.
+- The upload folder was empty afterwards.
+- Model choice: clip 2 was the intern joke. Clip 1 was the office-closing announcement, which 3b scored as funny.
+
+### Security
+
+- The quote is untrusted text. It is only tokenized and compared; it never becomes a path, a command, a filename or a
+  timestamp (a hostile-quote test checks this).
+- Final times always come from transcript data.
+- No new subprocess, network call or dependency. Grounding is stdlib only, and still only the local Ollama is contacted.
+- Output paths are still `clip_NNN.mp4` via M04 `safe_output_path`.
+- M06 upload and download protections were re-verified in the browser. AI output is autoescaped in the UI.
+- The output-token cap prevents a looping model from occupying the local server until the timeout.
+
+### Decisions
+
+1. **Default model `qwen2.5:3b`**, overridable with `OLLAMA_MODEL`.
+2. **Grounding lives in M03's validation step**, so M05's selection engine is unchanged.
+3. **No fuzzy matching.** Exact token sequences after harmless normalization only, so a paraphrase is rejected
+   rather than mapped to a guessed place.
+4. **The AI time is used only to choose between identical quotes**, and only when it overlaps exactly one of them.
+5. **Quote asked for last,** with a placeholder example (measured, see the table above).
+6. Default Ollama timeout 600 s; output cap 3072 tokens.
+
+### Known limitations
+
+1. Grounding fixes "right words, wrong time", not wrong choices. When 3b quotes the wrong line (the decision task,
+   the announcement-as-funny UI run), the clip faithfully shows that line.
+2. With the quote asked last, the quote sometimes follows the model's own (shifted) time. Quote-first prompts fix more
+   timestamps but cost ranking accuracy (3/12 vs 9/12).
+3. A paraphrased quote is rejected. Number words vs digits (`forty` vs `40`) and Whisper spelling differences are not
+   equated, but the model quotes the transcript text, so this has not mattered in practice.
+4. Quotes under 3 words are rejected (2-word lines like "Bye bye." cannot be clips).
+5. Repeated identical quotes need an AI time that overlaps exactly one occurrence; otherwise they are rejected.
+6. Segment-level fallback (no word timestamps) gives whole-segment spans. Real M02 output always has words.
+7. 3b AI time is 71-481 s per job on this CPU and dominates the pipeline. `AI_MAX_CANDIDATES` (default 20) is the
+   main lever.
+8. The benchmark is one synthetic 150 s transcript with 3 runs per cell: indicative, not conclusive.
+
+---
+
+## Milestone 07 - End-to-End Integration, Reliability & AI Quality Evaluation
+
 
 **Status: COMPLETED**
 
@@ -732,7 +937,7 @@ It also checked that a clip past the source end is rejected with no output writt
 | Pip | ✅ Upgraded | 26.2.1 |
 | Git | ✅ Initialized | Clean, main branch |
 | FFmpeg | ✅ Available | 9.0.2 (winget, in PATH) |
-| Ollama | ✅ Running | 0.32.15, `qwen2.5:0.5b` (default) and `qwen2.5:3b` (M07 benchmark, user-approved pull) |
+| Ollama | ✅ Installed | 0.32.15, `qwen2.5:3b` (default since M08) and `qwen2.5:0.5b` (still supported) |
 | Dependencies | ✅ Installed | 24 packages |
 
 ---
@@ -789,14 +994,15 @@ It also checked that a clip past the source end is rejected with no output writt
 
 ---
 
-## Next Milestone: **Milestone 08 - Selection Quality: Model Decision & Timestamp Grounding** (recommended)
+## Next Milestone: **Milestone 09 - AI Inference Performance: Candidate Budget** (recommended)
 
-M07 showed that clip *selection* quality is now the product bottleneck. Mechanics are reliable and measured, but the
-default model does not select meaningfully. Recommended scope, to be confirmed by the project architect:
-- Decide the default model from `docs/M07_AI_BENCHMARK.md` (0.5b vs 3b: quality vs ~1-2 min AI time per job).
-- Timestamp grounding: the model cites the words it chose and Python locates them verbatim in the transcript
-  (deterministic mapping, no semantic rules), then re-measure with `benchmarks/ai/run_benchmark.py`.
-- Optionally one bounded retry pass when there are too few distinct candidates.
+M08 made clip *locations* reliable. AI reasoning is now the measured bottleneck: 71-481 s per job with qwen2.5:3b,
+against ~40 s transcription and < 2 s FFmpeg. Recommended scope, to be confirmed by the project architect:
+- Ask the model for a candidate budget derived from the requested clip count (for example 2-3× `clip_count`,
+  bounded), instead of a fixed 20. Today the prompt always allows 20 candidates, and 3b sometimes writes nearly every line.
+- Re-measure AI time, top-1 accuracy and insufficient-candidate failures with `benchmarks/ai/run_benchmark.py`
+  and the real E2E harness. Keep the M08 grounding and the M07/M08 baselines for comparison.
+- Out of scope: captions, reframing and the other future features listed in M07/M08.
 
 ---
 
@@ -822,6 +1028,7 @@ D:\video_scliser\
 │   │   ├── exceptions.py
 │   │   ├── client.py
 │   │   ├── prompts.py
+│   │   ├── grounding.py      # M08: quote -> transcript timestamps
 │   │   ├── service.py
 │   │   └── cli.py
 │   ├── video/
@@ -868,6 +1075,7 @@ D:\video_scliser\
 │   ├── test_ui.py
 │   ├── test_e2e_pipeline.py      # M07 deterministic E2E (real FFmpeg, fake Whisper/Ollama)
 │   ├── test_benchmark_metrics.py
+│   ├── test_grounding.py         # M08 timestamp grounding
 │   └── test_real_e2e.py          # opt-in: CLIPPER_REAL_E2E=1
 ├── benchmarks/
 │   ├── ai/
@@ -886,7 +1094,7 @@ D:\video_scliser\
 └── .gitignore
 ```
 
-**Git Commit:** `feat: validate end-to-end pipeline and benchmark ai quality`
+**Git Commit:** `feat: improve ai selection with timestamp grounding`
 
 ---
 
