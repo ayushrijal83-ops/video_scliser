@@ -248,7 +248,7 @@ All settings are **environment variables** with safe defaults. You only need to 
 | `CLIPPER_PORT` | `5000` | Web UI port |
 | `CLIPPER_UPLOAD_DIR` | `input/ui_uploads` | Temporary upload folder |
 | `CLIPPER_OUTPUT_DIR` | `output/ui_jobs` | Where clips are written |
-| `CLIPPER_MAX_UPLOAD_MB` | `2048` | Upload size limit |
+| `CLIPPER_MAX_UPLOAD_MB` | `8192` | Upload size limit in MB (must be > 0). Large uploads briefly need about twice their size in free disk: a temporary copy in `%TEMP%` (usually on C:) plus the copy in the upload folder |
 | `CLIPPER_DEBUG` | off | `1` enables Flask debug mode (local development only) |
 
 **How to set one:**

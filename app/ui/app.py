@@ -206,7 +206,7 @@ def _build_request(source: Path, output_dir: Path) -> ClipJobRequest:
 def _save_upload(source: Path, probe: Probe) -> None:
     file = request.files["video"]
     source.parent.mkdir(parents=True, exist_ok=False)
-    file.save(source)  # streamed to disk by Werkzeug, never held in RAM
+    file.save(source)  # Werkzeug spooled it to %TEMP%; this copies it to disk, never through RAM
     if source.stat().st_size == 0:
         raise FormError("The uploaded file is empty.")
     try:

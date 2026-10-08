@@ -6,8 +6,9 @@ from pathlib import Path
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5000
-# Large enough for a long 1080p recording, small enough to stop an accidental multi-GB drop.
-DEFAULT_MAX_UPLOAD_MB = 2048
+# Hours of 1080p or about an hour of high-bitrate 4K. Werkzeug spools uploads to %TEMP% before the copy to
+# upload_dir, so peak disk use is about twice the upload size.
+DEFAULT_MAX_UPLOAD_MB = 8192
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,12 @@ class UIConfig:
     output_dir: Path = Path("output/ui_jobs")
     max_upload_mb: int = DEFAULT_MAX_UPLOAD_MB
     debug: bool = False
+
+    def __post_init__(self) -> None:
+        if self.max_upload_mb <= 0:
+            raise ValueError(
+                f"CLIPPER_MAX_UPLOAD_MB must be a positive number, got {self.max_upload_mb}."
+            )
 
     @classmethod
     def from_env(cls) -> UIConfig:

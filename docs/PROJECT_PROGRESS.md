@@ -128,6 +128,20 @@ dependencies, network endpoints or subprocesses. The quote stays untrusted text,
 
 ---
 
+### Follow-up: upload limit raised to 8 GB (2026-10-08)
+
+The UI rejected recordings over 2048 MB. Investigation before the change:
+- `MAX_CONTENT_LENGTH` (`app/ui/app.py`) is the only upper-bound check; nothing else checks size except the empty-file check.
+- Werkzeug 3.1 spools any upload over 500 KB to a temporary file in `%TEMP%` (C: on this machine), then `file.save()`
+  copies it to `input/ui_uploads/<job-id>/`. RAM stays flat at any size; peak disk use is about 2× the upload, split across drives.
+- The form label and the 413 message already read the configured value; only the docs hardcoded 2048.
+
+Change: `DEFAULT_MAX_UPLOAD_MB` 2048 → 8192, and `UIConfig` now raises `ValueError` for `CLIPPER_MAX_UPLOAD_MB` ≤ 0.
+Upload handling, the `%TEMP%` spool, and all AI, transcription, grounding, selection, FFmpeg and clipping code are unchanged.
+New tests: 8192 MB default, 0 and -5 rejected, home page shows the configured limit; the env-override and 413 tests are kept.
+
+---
+
 ## Milestone 08 - AI Selection Quality & Timestamp Grounding
 
 
@@ -559,7 +573,7 @@ There is no generic `?path=` endpoint.
 2. The extension is in M04's `SUPPORTED_EXTENSIONS` (`.mp4 .mkv .mov .avi .webm`). The browser MIME type is ignored.
 3. Count is parsed as `int` and duration as `float`, with a friendly message on garbage. **`ClipJobRequest`** then enforces
    1-20 clips, 1-600 s, finite values and focus ≤ 500 chars, so no business rules are duplicated.
-4. Size: `MAX_CONTENT_LENGTH` = 2048 MB (configurable) → 413 page. The file must not be empty.
+4. Size: `MAX_CONTENT_LENGTH` = 8192 MB (configurable, was 2048 MB) → 413 page. The file must not be empty.
 5. **M04 probe** (`VideoService.probe`): the file must be a real video in an allowed container, otherwise the user sees
    "could not be read as a supported video". M05's first stage still checks for a too-short video or no audio and reports
    both as friendly errors within seconds.
@@ -613,7 +627,7 @@ Technical details go to the server log (`logger.warning` / `logger.exception`). 
 | `CLIPPER_PORT` | 5000 |
 | `CLIPPER_UPLOAD_DIR` | `input/ui_uploads` |
 | `CLIPPER_OUTPUT_DIR` | `output/ui_jobs` |
-| `CLIPPER_MAX_UPLOAD_MB` | 2048 |
+| `CLIPPER_MAX_UPLOAD_MB` | 8192 (must be > 0) |
 | `CLIPPER_DEBUG` | off |
 
 Binding beyond localhost requires setting `CLIPPER_HOST` explicitly, and it logs a warning.

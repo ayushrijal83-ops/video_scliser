@@ -156,6 +156,18 @@ def test_safe_local_binding_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.max_upload_mb > 0
 
 
+def test_default_upload_limit_is_8gb(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLIPPER_MAX_UPLOAD_MB", raising=False)
+    assert UIConfig().max_upload_mb == UIConfig.from_env().max_upload_mb == 8192
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_non_positive_upload_limit_rejected(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("CLIPPER_MAX_UPLOAD_MB", value)
+    with pytest.raises(ValueError, match="CLIPPER_MAX_UPLOAD_MB must be a positive"):
+        UIConfig.from_env()
+
+
 def test_debug_disabled_by_default(monkeypatch: pytest.MonkeyPatch, config: UIConfig) -> None:
     monkeypatch.delenv("CLIPPER_DEBUG", raising=False)
     assert UIConfig.from_env().debug is False
@@ -187,6 +199,7 @@ def test_home_page_renders_form(client: FlaskClient) -> None:
     assert 'enctype="multipart/form-data"' in html
     assert "Generate Clips" in html
     assert "MP4" in html and "WEBM" in html
+    assert "up to 1 MB" in html  # the configured limit, not a hardcoded one
 
 
 def test_home_page_get_status(client: FlaskClient) -> None:

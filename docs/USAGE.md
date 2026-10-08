@@ -37,7 +37,7 @@ Open **<http://127.0.0.1:5000/>**.
 | | |
 |---|---|
 | Formats | MP4, MKV, MOV, AVI, WebM. Checked by extension **and** by FFprobe; the browser's MIME type is ignored |
-| Upload limit | 2048 MB (`CLIPPER_MAX_UPLOAD_MB`). Uploads stream to disk, never into RAM |
+| Upload limit | 8192 MB (`CLIPPER_MAX_UPLOAD_MB`). Uploads stream to disk, never into RAM: Werkzeug first writes a temporary file in `%TEMP%` (usually on C:), then copies it to the upload folder. Keep free space for the video on both drives |
 | Concurrency | One job at a time. A second submit is asked to wait |
 | Clips | `output/ui_jobs/<job-id>/clip_001.mp4 …`, kept until you delete them |
 | Upload copy | `input/ui_uploads/<job-id>/`, **deleted when the job ends** (success or failure). Leftovers from a crash are removed on the next start |
@@ -305,7 +305,7 @@ OLLAMA_MODEL=qwen2.5:0.5b python -m app.ui                 # bash
 | `CLIPPER_PORT` | `5000` | UI |
 | `CLIPPER_UPLOAD_DIR` | `input/ui_uploads` | UI |
 | `CLIPPER_OUTPUT_DIR` | `output/ui_jobs` | UI |
-| `CLIPPER_MAX_UPLOAD_MB` | `2048` | UI |
+| `CLIPPER_MAX_UPLOAD_MB` | `8192` | UI |
 | `CLIPPER_DEBUG` | off | UI (`1`/`true`; never on a non-local host) |
 
 Variables are read from the process environment only. The app doesn't load a `.env` file.
