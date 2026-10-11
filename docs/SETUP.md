@@ -251,6 +251,15 @@ All settings are **environment variables** with safe defaults. You only need to 
 | `CLIPPER_MAX_UPLOAD_MB` | `8192` | Upload size limit in MB (must be > 0). Large uploads briefly need about twice their size in free disk: a temporary copy in `%TEMP%` (usually on C:) plus the copy in the upload folder |
 | `CLIPPER_DEBUG` | off | `1` enables Flask debug mode (local development only) |
 
+> **Disk space for large uploads, measured:** a real multi-GB upload (tested up to ~8.6 GB) spools to `%TEMP%`,
+> then copies to `CLIPPER_UPLOAD_DIR`, one after the other — not both at once for the whole transfer. If `%TEMP%`
+> and `CLIPPER_UPLOAD_DIR` are on the **same drive** (the common case if you haven't moved either), that drive
+> briefly needs **about twice** the upload size, as the table above says — the temporary copy and the final copy
+> both exist on it for a moment at the handoff. If they are on **different drives** (as in the test that measured
+> this), each drive only needs **about one upload's worth** of free space at its own stage. Either way, plan for
+> the conservative "twice the upload size" figure unless you've confirmed your `%TEMP%` and `CLIPPER_UPLOAD_DIR`
+> are on different drives.
+
 **How to set one:**
 
 ```powershell

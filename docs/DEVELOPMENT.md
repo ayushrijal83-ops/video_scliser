@@ -34,7 +34,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for what each module does.
 Run all three before every commit. They are the definition of "done" for every milestone.
 
 ```bash
-pytest -q                 # 487 passed, 1 skipped (opt-in real-model test)
+pytest -q                 # most recently observed: 491 passed, 1 skipped (opt-in real-model test); count grows as tests are added
 ruff check .              # lint
 mypy app benchmarks       # type check
 ```
