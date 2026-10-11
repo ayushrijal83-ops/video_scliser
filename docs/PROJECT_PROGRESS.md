@@ -27,7 +27,55 @@ Build a completely free, local AI-powered automatic video clipper that:
 
 ---
 
-## Current Milestone: **Milestone 09 - AI Efficiency & Candidate Budget**
+## Current Milestone: **Milestone 10 - V1 Scope Review**
+
+**Status: COMPLETED - decision: accept current state, no code change**
+
+### Objective
+
+M09 left the next step undefined (`docs/PROJECT_PROGRESS.md` "Next Milestone" section listed three options:
+accept the current state, revisit the AI runtime/model, or start the V1 feature backlog). This milestone is that
+decision, made by the project owner on 2026-10-11.
+
+### Verification performed before the decision
+
+- Git state matches the expected history exactly: `main` one commit ahead of `origin/main` at `0845848`
+  ("feat: increase local upload limit to 8gb"), one untracked file.
+- `audit_project.py` (untracked): inspected. A standalone, read-only repo-audit script (prints the file tree,
+  config files, git status, Python environment and checks for `ffmpeg`/`ffprobe`/`ollama`). It is not imported by
+  `app/`, `benchmarks/` or `tests/`, and runs no destructive commands. Left as-is, untracked, pending an explicit
+  decision on whether to commit or discard it.
+- Full pytest suite (`.venv`): **490 passed, 1 skipped** (the one opt-in `test_real_e2e.py`, requires
+  `CLIPPER_REAL_E2E=1` plus a live Whisper/Ollama/FFmpeg stack).
+- `ruff check app benchmarks tests`: clean. (`ruff check .` repo-wide reports 5 pre-existing style warnings, all in
+  the untracked `audit_project.py`; not a regression in tracked code.)
+- `mypy app benchmarks`: clean.
+- This confirms M08 (timestamp grounding) and M09 (candidate-budget experiment, reverted) both still hold against
+  their original acceptance criteria; no gaps were found.
+
+### Decision
+
+**Accept the current state for V1.** AI inference time (60-480 s per job on this CPU, qwen2.5:3b) and selection
+quality are treated as acceptable, per the evidence already recorded in M07-M09. No production code was changed.
+The AI runtime/model revisit and the V1 feature backlog (captions, filter presets, 9:16 reframing, etc.) remain
+open options for a future milestone, to be opened explicitly when prioritized.
+
+### Tests and quality gates
+
+No code changed; gates re-verified only: 490 passed / 1 skipped, ruff clean (tracked code), mypy clean.
+
+### Security
+
+No code changed. No new dependencies, network calls or subprocesses.
+
+### Known limitations
+
+Unchanged from M09: qwen2.5:3b AI time (60-480 s/job) remains the dominant cost; selection quality remains
+sensitive to prompt/budget changes; the real-transcript check covers one video.
+
+---
+
+## Milestone 09 - AI Efficiency & Candidate Budget
 
 **Status: COMPLETED - negative result, production behaviour unchanged**
 
@@ -1110,13 +1158,14 @@ It also checked that a clip past the source end is rejected with no output writt
 
 ---
 
-## Next Milestone: **Milestone 10 - to be defined by the project architect**
+## Next Milestone: **Milestone 11 - to be defined by the project architect**
 
-M09 showed that cutting AI time by asking for fewer candidates degrades qwen2.5:3b selection, so AI inference
-time (60-480 s per job on this CPU) remains open. Options worth considering, none started:
-- Accept the current speed (quality and location reliability are now measured and acceptable for V1).
-- Revisit only with a different model or runtime, re-measured with `--budgets` and the real-transcript check.
-- Move to the V1 feature backlog (captions, 9:16 reframing, ...), which M07-M09 kept out of scope.
+M10 decided to accept the current AI performance/quality trade-off for V1 (no code change). Options for M11,
+none started:
+- Revisit AI runtime/model only when there is a concrete candidate, re-measured with `--budgets` and the
+  real-transcript check.
+- Move to the V1 feature backlog (captions, filter presets, 9:16 reframing, ...), which M07-M10 kept out of scope.
+- Decide on `audit_project.py` (untracked): commit it as a dev utility, or discard it.
 
 ---
 
@@ -1208,7 +1257,7 @@ D:\video_scliser\
 └── .gitignore
 ```
 
-**Git Commit:** `test: benchmark ai candidate budgets (no production change)`
+**Git Commit:** `feat: increase local upload limit to 8gb` (M10 added no commit: docs-only, no code change)
 
 ---
 
