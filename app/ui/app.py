@@ -155,6 +155,11 @@ def create_job() -> Response | tuple[str, int]:
     except FormError as e:
         shutil.rmtree(upload_dir, ignore_errors=True)
         return render_template("index.html", form=request.form, error=str(e), **_limits()), 400
+    except OSError as e:
+        logger.warning("Upload save failed for job %s: %s", job_id, e)
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        message = "The upload could not be saved. Check available disk space and try again."
+        return render_template("error.html", title="Upload failed", message=message, job=None), 500
     except BaseException:
         shutil.rmtree(upload_dir, ignore_errors=True)
         raise

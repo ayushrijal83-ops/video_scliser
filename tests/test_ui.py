@@ -266,6 +266,26 @@ def test_missing_ffprobe_message(config: UIConfig) -> None:
     assert "FFmpeg is not installed" in r.get_data(as_text=True)
 
 
+def test_upload_save_failure_is_friendly(
+    client: FlaskClient, config: UIConfig, service: FakeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disk-full/write error while saving the upload must render the app's own error
+    page (never Flask's generic 500), and must still clean up the upload directory."""
+
+    def raise_no_space(self: Any, dst: Any, bufsize: int = 16384) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("werkzeug.datastructures.FileStorage.save", raise_no_space)
+    r = submit(client)
+    assert r.status_code == 500
+    html = r.get_data(as_text=True)
+    assert "Upload failed" in html
+    assert "disk space" in html
+    assert "No space left on device" not in html
+    assert not service.requests
+    assert dir_entries(config.upload_dir) == []
+
+
 def test_oversized_upload(client: FlaskClient, config: UIConfig, service: FakeService) -> None:
     r = submit(client, data=b"x" * (1024 * 1024 + 10))
     assert r.status_code == 413
