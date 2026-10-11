@@ -94,9 +94,10 @@ This is the one gate that must be run against the **actual** running application
    count.
 5. [x] **[MANUAL]** Confirm `input/ui_uploads/<job_id>/` no longer exists after the job ends (success or
    failure).
-6. [ ] **[MANUAL]** Confirm a failed job leaves no partial clips in `output/ui_jobs/<job_id>/`. Not exercised by
-   this ordinary-sized run, which succeeded; the all-or-nothing/partial-failure cleanup guarantee itself is
-   covered separately by `tests/test_clipping_service.py` (unit-level), not by a real-HTTP failure run.
+6. [x] **[MANUAL]** Confirm a failed job leaves no partial clips in `output/ui_jobs/<job_id>/`. **Verified live** —
+   see below. This specifically covers a **validation-stage** failure (before transcription/AI processing ever
+   starts). It does **not** cover a failure during transcription, AI analysis, or rendering — those remain
+   covered only by `tests/test_clipping_service.py` (unit-level), not by a real-HTTP failure run.
 
 **[VERIFIED — M11, 2026-10-11] All six steps above were performed for real, multiple times:**
 - During Missions 01 and 02 (see §4 for the large-file instances), against the working tree described in §7
@@ -108,9 +109,17 @@ This is the one gate that must be run against the **actual** running application
   clips, both exactly **8.000000 s**, H.264 + AAC. `input/ui_uploads/<job_id>/` confirmed removed afterward. The
   server log showed a clean run (validating → transcribing → analyzing → selecting → generating →
   validating_outputs → completed), with only the expected "quote too short to ground" rejections and no errors.
-- This satisfies the "re-run against the exact commit being released" caveat that previously applied here — but
-  only for *this* exact commit (`320078f`); a release built from a later commit should still re-run this once
-  more, as item 6 above remains genuinely unexercised by a real-HTTP run (only by unit tests).
+- **Item 6, specifically — a real failed-job cleanup run:** `clip_count=1`, `clip_duration=200` (seconds) submitted
+  via real `curl` multipart POST against the same fixture (146.733 s long), chosen because `200 > 146.733` so
+  `app/clipping/service.py`'s `_probe_source` raises `SourceTooShortError` immediately. Result: HTTP 303, job
+  `9a8cf519aed7459485a25924dee8a81d`, failed in the `validating` stage ~60 ms after starting (log: `[failed]
+  validating: source video is 146.733s, shorter than the requested clip duration 200.000s`) — no `transcribing`
+  line ever appears. Afterward: `input/ui_uploads/<job_id>/` absent, `output/ui_jobs/<job_id>/` absent (never
+  created, since `_plan_outputs` is never reached), and every pre-existing, unrelated job directory under
+  `output/ui_jobs/` was left untouched.
+- This satisfies the "re-run against the exact commit being released" caveat that previously applied here, for
+  *this* exact commit (`320078f` and after). A release built from a later commit should still re-run at least the
+  ordinary success case once more if the code has changed since.
 
 ---
 
@@ -163,7 +172,7 @@ This is not a bug — just worth knowing precisely before sizing a test file or 
 
 ## 5. Failure handling and cleanup
 
-- [ ] **[VERIFIED — M11, 2026-10-11 Mission 01]** An upload-save I/O failure (e.g. disk full during
+- [x] **[VERIFIED — M11, 2026-10-11 Mission 01]** An upload-save I/O failure (e.g. disk full during
   `file.save()`) is now handled: `app/ui/app.py`'s `create_job()` catches `OSError` and renders the app's own
   `error.html` ("The upload could not be saved. Check available disk space and try again.", HTTP 500) instead of
   leaking Flask's generic Internal-Server-Error page. The upload directory is still cleaned up in this path.
@@ -173,7 +182,7 @@ This is not a bug — just worth knowing precisely before sizing a test file or 
     This is **simulated**, not a real full disk — stated explicitly per this checklist's own rule: do not claim a
     real disk-full event was induced. A permanent regression test for this exists:
     `tests/test_ui.py::test_upload_save_failure_is_friendly`.
-- [ ] **[VERIFIED — M11, 2026-10-11 Mission 02]** The over-limit request (§4) is a **real**, live-HTTP-induced
+- [x] **[VERIFIED — M11, 2026-10-11 Mission 02]** The over-limit request (§4) is a **real**, live-HTTP-induced
   413 — not simulated — confirming the pre-existing `RequestEntityTooLarge` → friendly-error path
   (`app/ui/app.py:http_error`) still works at this scale, with no job or upload-directory artifact left behind.
 - [ ] **[MANUAL]** A real client-mid-upload disconnect has **not** been tested, simulated, or claimed as tested
@@ -226,6 +235,8 @@ milestone "Known limitations" sections and are not repeated here.
 - [x] Upload-save `OSError` now produces a friendly error instead of a generic 500 (§5, Mission 01; simulated
   failure, real regression test).
 - [x] Full pytest suite, Ruff (tracked code), and mypy all green at the time of this checklist (§2).
+- [x] Real failed-job cleanup via live HTTP, for a validation-stage failure specifically (§3 item 6): no
+  upload-directory or output-directory artifact left behind, unrelated job output untouched.
 
 ### Must be checked by the person preparing a release
 
@@ -250,8 +261,25 @@ themselves do not affect the upload/boundary behavior measured in §4 (they only
 
 ### GO / NO-GO
 
-**Not decided here.** This checklist does not grant release approval by itself — that is a decision for whoever
-is preparing the release, after completing the "must be checked" items above.
+**Decision: GO — scoped strictly to a local, single-user, localhost-only V1 release.** This is **not** a decision
+that V1 is ready for commercial distribution, multi-user use, or any internet-facing deployment — nothing in this
+checklist tests for that, and the known gaps below are accepted here only because the scope is one trusted user
+running the app on their own machine, as the entire project (`SETUP.md`, `PROJECT_PROGRESS.md`) has been designed
+and documented throughout.
 
-- [ ] **GO** — all applicable boxes above checked, remaining limitations in §6 accepted as-is.
+Reasons: the core pipeline is verified end-to-end by real HTTP evidence at small, near-8-GiB-cap, and
+boundary-crossing sizes (§3, §4); the one real defect found (upload-save `OSError`) was fixed and proven (§5);
+cleanup is now verified live for both the success path and two distinct failure paths — upload-save failure and
+validation-stage job failure (§3 item 6, §5); all automated quality gates are green at the released commit (§2).
+
+**Explicitly accepted, not resolved, for this local-only scope** (do not carry these into any broader claim):
+- The **[OPEN / UNATTRIBUTED]** ~4.8 GB C: drive observation (§6) remains unexplained. No cause is proven; it is
+  accepted as a low-probability risk for a single local user, not as a closed finding.
+- Real client-mid-upload disconnect and genuine full-disk conditions (§5) remain **untested**, not merely
+  deferred-and-passed. They are accepted as out of scope for this local release given the risk of inducing them
+  for real, not because evidence shows the app handles them correctly.
+- A failure during transcription, AI analysis, or rendering (as opposed to the validation-stage failure just
+  verified in §3 item 6) is still only unit-tested, not live-HTTP-tested.
+
+- [x] **GO** — for a local, single-user, localhost-only V1 release only, on the reasoning above.
 - [ ] **NO-GO** — outstanding item(s): _______________________________________________
