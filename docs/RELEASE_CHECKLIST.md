@@ -82,25 +82,35 @@ silently edited elsewhere. If corrected, the current true figure is 491.
 This is the one gate that must be run against the **actual** running application, not mocks — a unit-test pass in
 §2 does not substitute for this.
 
-1. [ ] **[MANUAL]** Start the real app with the documented command (`SETUP.md` §7 / `start.bat`):
+1. [x] **[MANUAL]** Start the real app with the documented command (`SETUP.md` §7 / `start.bat`):
    ```bash
    python -m app.ui
    ```
-2. [ ] **[MANUAL]** Upload a valid local video through the real browser form (or an equivalent real HTTP
+2. [x] **[MANUAL]** Upload a valid local video through the real browser form (or an equivalent real HTTP
    multipart POST to `/jobs` — **not** a direct call to any internal function).
-3. [ ] **[MANUAL]** Follow the job through to a terminal state via `/jobs/<id>` (completed or failed).
-4. [ ] **[MANUAL]** On success, independently re-probe the output clip(s) with `ffprobe` (not just trusting the
+3. [x] **[MANUAL]** Follow the job through to a terminal state via `/jobs/<id>` (completed or failed).
+4. [x] **[MANUAL]** On success, independently re-probe the output clip(s) with `ffprobe` (not just trusting the
    app's own result page) for: exact requested duration, H.264 video stream, AAC audio stream, correct clip
    count.
-5. [ ] **[MANUAL]** Confirm `input/ui_uploads/<job_id>/` no longer exists after the job ends (success or
+5. [x] **[MANUAL]** Confirm `input/ui_uploads/<job_id>/` no longer exists after the job ends (success or
    failure).
-6. [ ] **[MANUAL]** Confirm a failed job leaves no partial clips in `output/ui_jobs/<job_id>/`.
+6. [ ] **[MANUAL]** Confirm a failed job leaves no partial clips in `output/ui_jobs/<job_id>/`. Not exercised by
+   this ordinary-sized run, which succeeded; the all-or-nothing/partial-failure cleanup guarantee itself is
+   covered separately by `tests/test_clipping_service.py` (unit-level), not by a real-HTTP failure run.
 
-**[VERIFIED — M11, 2026-10-11]** All six steps above were performed for real, multiple times, during Missions 01
-and 02 (see §4 for the large-file instances). A smaller/ordinary-sized real run was not re-isolated separately
-from the large-file runs, but every large-file run in §4 *is* a real end-to-end smoke test by this same procedure,
-at larger scale. A release should still re-run this once more against the exact commit being released, since the
-M11 evidence is from the working tree described in §7.
+**[VERIFIED — M11, 2026-10-11] All six steps above were performed for real, multiple times:**
+- During Missions 01 and 02 (see §4 for the large-file instances), against the working tree described in §7
+  (uncommitted at the time).
+- **Again as an ordinary-sized run, after commits `ec20bcf`/`320078f`** — i.e. against the exact code now sitting
+  on `main`, not just the working tree: `python -m app.ui` started; the existing small real-speech fixture
+  `output/e2e/speech_meeting.mp4` (2.1 MB, 146.7 s) uploaded via real `curl` multipart POST to `/jobs` (HTTP 303,
+  job `1650b3bd062f43cdb69bf5e887a8ecd3`); followed to "clips ready" in ~2 min 5 s. Independently re-probed: **2**
+  clips, both exactly **8.000000 s**, H.264 + AAC. `input/ui_uploads/<job_id>/` confirmed removed afterward. The
+  server log showed a clean run (validating → transcribing → analyzing → selecting → generating →
+  validating_outputs → completed), with only the expected "quote too short to ground" rejections and no errors.
+- This satisfies the "re-run against the exact commit being released" caveat that previously applied here — but
+  only for *this* exact commit (`320078f`); a release built from a later commit should still re-run this once
+  more, as item 6 above remains genuinely unexercised by a real-HTTP run (only by unit tests).
 
 ---
 
@@ -222,12 +232,13 @@ milestone "Known limitations" sections and are not repeated here.
 - [ ] All **[MANUAL]** items in §1-§3 above, on the actual machine/environment the release targets.
 - [ ] Re-run §2's three commands against the exact commit being released (M11's evidence is from a working tree
   with two uncommitted changes — see below — not yet a tagged commit).
-- [ ] Decide on `audit_project.py` (still untracked as of this checklist — commit as a documented dev tool, or
-  discard; see M10's "Next Milestone" notes in `PROJECT_PROGRESS.md`).
+- [x] `audit_project.py` is **excluded from this release candidate** and remains untracked (not staged, not
+  committed, not modified). This is a decision for *this* release; whether it ever becomes a maintained dev tool
+  is a separate, future task — see M10's "Next Milestone" notes in `PROJECT_PROGRESS.md`.
 - [ ] Decide whether the real client-disconnect and genuine full-disk scenarios (§5) need to be tested before
   this release, or deferred.
-- [ ] Decide whether the DEVELOPMENT.md stale test count (§2) and the SETUP.md "twice their size" disk estimate
-  (§1) should be corrected before release (both are pre-existing doc drift, not errors introduced by M11).
+- [x] The DEVELOPMENT.md stale test count (§2) and the SETUP.md "twice their size" disk estimate (§1) have
+  **already been corrected**, in commit `320078f`.
 
 ### Working tree this evidence was gathered against
 
